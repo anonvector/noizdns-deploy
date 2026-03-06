@@ -9,7 +9,7 @@
 
 set -e
 
-SCRIPT_VERSION="1.0.0"
+SCRIPT_VERSION="1.2.0"
 SCRIPT_URL="https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/noizdns-deploy.sh"
 
 # Check if running as root
@@ -448,7 +448,11 @@ Wants=network.target
 Type=simple
 User=$SERVICE_USER
 Group=$SERVICE_USER
-ExecStart=${INSTALL_DIR}/dnstt-server -udp :${DNSTT_PORT} -privkey-file ${PRIVATE_KEY_FILE} -mtu ${MTU_VALUE} ${NS_SUBDOMAIN} 127.0.0.1:${target_port}
+Environment=TOR_PT_MANAGED_TRANSPORT_VER=1
+Environment=TOR_PT_SERVER_TRANSPORTS=dnstt
+Environment=TOR_PT_SERVER_BINDADDR=dnstt-0.0.0.0:${DNSTT_PORT}
+Environment=TOR_PT_ORPORT=127.0.0.1:${target_port}
+ExecStart=${INSTALL_DIR}/dnstt-server -privkey-file ${PRIVATE_KEY_FILE} -mtu ${MTU_VALUE} ${NS_SUBDOMAIN}
 Restart=always
 RestartSec=5
 KillMode=mixed
@@ -1192,7 +1196,14 @@ main() {
 
     # If running from installed location, show interactive menu
     if [ "$(realpath "$0" 2>/dev/null || echo "$0")" = "$SCRIPT_INSTALL_PATH" ]; then
-        handle_menu
+        # handle_menu returns 0 when user picks "Install / Reconfigure"
+        while true; do
+            handle_menu
+            do_install
+            echo ""
+            print_question "Press Enter to return to menu..."
+            read -r
+        done
     fi
 
     # First-time install (run via curl)
