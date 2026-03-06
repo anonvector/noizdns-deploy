@@ -218,8 +218,9 @@ generate_slipnet_configs() {
     # Extract short label from domain (e.g., "t.example.com" → "example")
     local short_name
     short_name=$(echo "$NS_SUBDOMAIN" | awk -F. '{if(NF>=2) print $(NF-1); else print $1}')
-    local dnstt_data="16|dnstt|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
-    local noizdns_data="16|sayedns|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+    local ssh_port="${SSH_PORT:-22}"
+    local dnstt_data="16|dnstt|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+    local noizdns_data="16|sayedns|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
 
     local dnstt_config="slipnet://$(echo -n "$dnstt_data" | base64 -w0)"
     local noizdns_config="slipnet://$(echo -n "$noizdns_data" | base64 -w0)"
@@ -257,6 +258,7 @@ save_config() {
 NS_SUBDOMAIN="$NS_SUBDOMAIN"
 MTU_VALUE="$MTU_VALUE"
 TUNNEL_MODE="$TUNNEL_MODE"
+SSH_PORT="$SSH_PORT"
 PRIVATE_KEY_FILE="$PRIVATE_KEY_FILE"
 PUBLIC_KEY_FILE="$PUBLIC_KEY_FILE"
 EOF
@@ -325,11 +327,25 @@ get_user_input() {
         esac
     done
 
+    # SSH port (only for ssh mode)
+    if [ "$TUNNEL_MODE" = "ssh" ]; then
+        local detected_port
+        detected_port=$(detect_ssh_port)
+        local default_port="${SSH_PORT:-$detected_port}"
+        echo ""
+        echo -e "  ${CYAN}SSH Port${NC}"
+        echo -e "  Auto-detected: ${YELLOW}${detected_port}${NC}"
+        print_question "SSH port [${default_port}]: "
+        read -r ssh_port_input
+        SSH_PORT="${ssh_port_input:-$default_port}"
+    fi
+
     echo ""
     print_line
     print_status "Domain:      $NS_SUBDOMAIN"
     print_status "MTU:         $MTU_VALUE"
     print_status "Tunnel mode: $TUNNEL_MODE"
+    [ "$TUNNEL_MODE" = "ssh" ] && print_status "SSH port:    $SSH_PORT"
     print_line
 }
 
@@ -468,7 +484,16 @@ EOF
 
 detect_ssh_port() {
     local port
-    port=$(ss -tlnp | grep sshd | awk '{print $4}' | grep -oP '[0-9]+$' | head -1)
+    # 1. Use sshd -T (most reliable — reads actual config including Match blocks)
+    port=$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}')
+    # 2. Fallback: parse sshd_config directly
+    if [ -z "$port" ]; then
+        port=$(grep -iE '^\s*Port\s+' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1)
+    fi
+    # 3. Fallback: check ss for listening sshd
+    if [ -z "$port" ]; then
+        port=$(ss -tlnp 2>/dev/null | grep -w sshd | awk '{print $4}' | grep -oE '[0-9]+$' | head -1)
+    fi
     echo "${port:-22}"
 }
 
@@ -477,8 +502,14 @@ detect_ssh_port() {
 create_systemd_service() {
     local target_port
     if [ "$TUNNEL_MODE" = "ssh" ]; then
-        target_port=$(detect_ssh_port)
-        print_status "SSH port detected: $target_port"
+        if [ -n "$SSH_PORT" ]; then
+            target_port="$SSH_PORT"
+            print_status "Using configured SSH port: $target_port"
+        else
+            target_port=$(detect_ssh_port)
+            SSH_PORT="$target_port"
+            print_status "SSH port detected: $target_port"
+        fi
     else
         target_port="1080"
     fi
@@ -564,7 +595,8 @@ show_configuration_info() {
     echo -e "  Domain:  ${YELLOW}$NS_SUBDOMAIN${NC}"
     echo -e "  MTU:     ${YELLOW}$MTU_VALUE${NC}"
     echo -e "  Mode:    ${YELLOW}$TUNNEL_MODE${NC}"
-    echo -e "  Port:    ${YELLOW}$DNSTT_PORT${NC} (redirected from 53)"
+    echo -e "  DNS Port: ${YELLOW}$DNSTT_PORT${NC} (redirected from 53)"
+    [ "$TUNNEL_MODE" = "ssh" ] && echo -e "  SSH Port: ${YELLOW}${SSH_PORT:-$(detect_ssh_port)}${NC}"
     echo -e "  Status:  $status_text"
     echo ""
 
