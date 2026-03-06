@@ -179,22 +179,8 @@ generate_keys() {
         fi
     fi
 
-    echo ""
-    echo "  Key setup:"
-    echo -e "    ${WHITE}1)${NC} Generate new keypair"
-    echo -e "    ${WHITE}2)${NC} Import existing private key"
-    print_question "Choice [1]: "
-    read -r key_choice
-
-    case ${key_choice:-1} in
-        2)
-            import_existing_key
-            ;;
-        *)
-            print_status "Generating new keypair..."
-            dnstt-server -gen-key -privkey-file "$PRIVATE_KEY_FILE" -pubkey-file "$PUBLIC_KEY_FILE"
-            ;;
-    esac
+    print_status "Generating new keypair..."
+    dnstt-server -gen-key -privkey-file "$PRIVATE_KEY_FILE" -pubkey-file "$PUBLIC_KEY_FILE"
 
     chown "$SERVICE_USER":"$SERVICE_USER" "$PRIVATE_KEY_FILE" "$PUBLIC_KEY_FILE"
     chmod 600 "$PRIVATE_KEY_FILE"
@@ -206,45 +192,47 @@ generate_keys() {
     echo ""
 }
 
-import_existing_key() {
-    echo ""
-    echo -e "  ${CYAN}Tip:${NC} Find your private key on the old server at:"
-    echo -e "  ${WHITE}cat /etc/noizdns/*_server.key${NC}"
-    echo ""
-    print_question "Paste your private key (64 hex chars): "
-    read -r privkey_hex
+# ─── SlipNet Config Generation ───────────────────────────────────────────────
 
-    # Validate: must be exactly 64 hex characters
-    if [[ ! "$privkey_hex" =~ ^[0-9a-fA-F]{64}$ ]]; then
-        print_error "Invalid private key. Must be exactly 64 hex characters."
-        print_status "Falling back to generating a new keypair..."
-        dnstt-server -gen-key -privkey-file "$PRIVATE_KEY_FILE" -pubkey-file "$PUBLIC_KEY_FILE"
+generate_slipnet_configs() {
+    if [ ! -f "$PUBLIC_KEY_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
+        return
+    fi
+    load_existing_config
+
+    local pubkey
+    pubkey=$(cat "$PUBLIC_KEY_FILE" 2>/dev/null)
+    if [ -z "$pubkey" ]; then
         return
     fi
 
-    # Write private key
-    echo "$privkey_hex" > "$PRIVATE_KEY_FILE"
+    # v16 pipe-delimited format, base64 encoded with slipnet:// scheme
+    # Fields: version|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|
+    #         dnsttPublicKey|socksUser|socksPass|sshEnabled|sshUser|sshPass|sshPort|
+    #         fwdDns|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivKey|
+    #         sshKeyPass|torBridges|dnsttAuthoritative|naivePort|naiveUser|naivePass|
+    #         isLocked|lockHash|expiration|allowSharing|boundDeviceId
 
-    # Derive public key: start dnstt-server briefly and capture the pubkey from log
-    print_status "Deriving public key..."
-    local pubkey_hex
-    pubkey_hex=$(timeout 2 dnstt-server -privkey "$privkey_hex" -gen-key 2>&1 | grep -oP 'pubkey\s+\K[0-9a-f]{64}' || true)
+    local dnstt_data="16|dnstt|DNSTT - ${NS_SUBDOMAIN}|${NS_SUBDOMAIN}||0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+    local noizdns_data="16|sayedns|NoizDNS - ${NS_SUBDOMAIN}|${NS_SUBDOMAIN}||0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
 
-    if [[ -z "$pubkey_hex" ]]; then
-        # Fallback: ask user for the pubkey
-        print_warning "Could not derive public key automatically."
-        print_question "Paste the matching public key (64 hex chars): "
-        read -r pubkey_hex
-        if [[ ! "$pubkey_hex" =~ ^[0-9a-fA-F]{64}$ ]]; then
-            print_error "Invalid public key."
-            print_status "Falling back to generating a new keypair..."
-            dnstt-server -gen-key -privkey-file "$PRIVATE_KEY_FILE" -pubkey-file "$PUBLIC_KEY_FILE"
-            return
-        fi
-    fi
+    local dnstt_config="slipnet://$(echo -n "$dnstt_data" | base64 -w0)"
+    local noizdns_config="slipnet://$(echo -n "$noizdns_data" | base64 -w0)"
 
-    echo "$pubkey_hex" > "$PUBLIC_KEY_FILE"
-    print_status "Imported keypair successfully."
+    echo ""
+    print_line
+    echo -e "  ${BOLD}SlipNet Config Links${NC}"
+    print_line
+    echo ""
+    echo -e "  ${CYAN}DNSTT:${NC}"
+    echo -e "  ${WHITE}${dnstt_config}${NC}"
+    echo ""
+    echo -e "  ${CYAN}NoizDNS:${NC}"
+    echo -e "  ${WHITE}${noizdns_config}${NC}"
+    echo ""
+    echo -e "  ${CYAN}How to use:${NC} Copy a link above and paste it in SlipNet app"
+    echo -e "  (Profile → Import → Paste config link)"
+    print_line
 }
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -596,6 +584,8 @@ show_configuration_info() {
     fi
     echo -e "  ${CYAN}Managed Users:${NC} ${YELLOW}${user_count}${NC}"
     echo ""
+
+    generate_slipnet_configs
 }
 
 print_success_box() {
