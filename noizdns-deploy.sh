@@ -179,8 +179,22 @@ generate_keys() {
         fi
     fi
 
-    print_status "Generating new keypair..."
-    dnstt-server -gen-key -privkey-file "$PRIVATE_KEY_FILE" -pubkey-file "$PUBLIC_KEY_FILE"
+    echo ""
+    echo "  Key setup:"
+    echo -e "    ${WHITE}1)${NC} Generate new keypair"
+    echo -e "    ${WHITE}2)${NC} Import existing private key"
+    print_question "Choice [1]: "
+    read -r key_choice
+
+    case ${key_choice:-1} in
+        2)
+            import_existing_key
+            ;;
+        *)
+            print_status "Generating new keypair..."
+            dnstt-server -gen-key -privkey-file "$PRIVATE_KEY_FILE" -pubkey-file "$PUBLIC_KEY_FILE"
+            ;;
+    esac
 
     chown "$SERVICE_USER":"$SERVICE_USER" "$PRIVATE_KEY_FILE" "$PUBLIC_KEY_FILE"
     chmod 600 "$PRIVATE_KEY_FILE"
@@ -190,6 +204,46 @@ generate_keys() {
     echo -e "  ${CYAN}Public Key:${NC}"
     echo -e "  ${YELLOW}$(cat "$PUBLIC_KEY_FILE")${NC}"
     echo ""
+}
+
+import_existing_key() {
+    echo ""
+    print_question "Paste your private key (64 hex chars): "
+    read -r privkey_hex
+
+    # Validate: must be exactly 64 hex characters
+    if [[ ! "$privkey_hex" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        print_error "Invalid private key. Must be exactly 64 hex characters."
+        print_status "Falling back to generating a new keypair..."
+        dnstt-server -gen-key -privkey-file "$PRIVATE_KEY_FILE" -pubkey-file "$PUBLIC_KEY_FILE"
+        return
+    fi
+
+    # Write private key to file
+    echo "$privkey_hex" > "$PRIVATE_KEY_FILE"
+
+    # Derive public key by running dnstt-server with the private key
+    # dnstt-server prints "pubkey <hex>" to stdout when started, but we need
+    # a cleaner way. Generate a throwaway keypair, then overwrite the privkey
+    # and use -gen-key to derive the pubkey.
+    # Actually, we can use the -privkey flag to start the server briefly and
+    # capture the pubkey from the log. Simpler: use openssl or a hex trick.
+    #
+    # The Noise protocol pubkey = Curve25519 base point * privkey.
+    # dnstt-server -gen-key always generates both. Instead, we write the
+    # privkey file and ask the user for the pubkey too.
+    print_question "Paste the matching public key (64 hex chars): "
+    read -r pubkey_hex
+
+    if [[ ! "$pubkey_hex" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        print_error "Invalid public key. Must be exactly 64 hex characters."
+        print_status "Falling back to generating a new keypair..."
+        dnstt-server -gen-key -privkey-file "$PRIVATE_KEY_FILE" -pubkey-file "$PUBLIC_KEY_FILE"
+        return
+    fi
+
+    echo "$pubkey_hex" > "$PUBLIC_KEY_FILE"
+    print_status "Imported keypair successfully."
 }
 
 # ─── Configuration ────────────────────────────────────────────────────────────
