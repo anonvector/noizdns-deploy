@@ -213,8 +213,10 @@ generate_slipnet_configs() {
     #         sshKeyPass|torBridges|dnsttAuthoritative|naivePort|naiveUser|naivePass|
     #         isLocked|lockHash|expiration|allowSharing|boundDeviceId
 
-    local dnstt_data="16|dnstt|DNSTT - ${NS_SUBDOMAIN}|${NS_SUBDOMAIN}||0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
-    local noizdns_data="16|sayedns|NoizDNS - ${NS_SUBDOMAIN}|${NS_SUBDOMAIN}||0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+    # Default resolver: 8.8.8.8:53 (user can change in app or use DNS scanner)
+    local default_resolver="8.8.8.8:53:0"
+    local dnstt_data="16|dnstt|DNSTT - ${NS_SUBDOMAIN}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+    local noizdns_data="16|sayedns|NoizDNS - ${NS_SUBDOMAIN}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
 
     local dnstt_config="slipnet://$(echo -n "$dnstt_data" | base64 -w0)"
     local noizdns_config="slipnet://$(echo -n "$noizdns_data" | base64 -w0)"
