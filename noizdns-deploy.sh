@@ -96,11 +96,11 @@ install_dependencies() {
 
     case $PKG_MANAGER in
         dnf|yum)
-            $PKG_MANAGER install -y curl iptables iptables-services 2>/dev/null || true
+            $PKG_MANAGER install -y curl iptables iptables-services qrencode 2>/dev/null || true
             ;;
         apt)
             apt update -qq
-            apt install -y curl iptables 2>/dev/null || true
+            apt install -y curl iptables qrencode 2>/dev/null || true
             ;;
     esac
 }
@@ -235,9 +235,21 @@ generate_slipnet_configs() {
     echo -e "  ${CYAN}NoizDNS:${NC}"
     echo -e "  ${WHITE}${noizdns_config}${NC}"
     echo ""
-    echo -e "  ${CYAN}How to use:${NC} Copy a link above and paste it in SlipNet app"
-    echo -e "  (Profile → Import → Paste config link)"
+    echo -e "  ${CYAN}How to use:${NC} Copy a link above or scan a QR code in SlipNet app"
+    echo -e "  (Profile → Import → Paste config link or Scan QR)"
     print_line
+
+    # Show QR codes if qrencode is available
+    if command -v qrencode &>/dev/null; then
+        echo ""
+        echo -e "  ${BOLD}DNSTT QR Code${NC}"
+        echo ""
+        qrencode -t UTF8 -m 2 "$dnstt_config"
+        echo ""
+        echo -e "  ${BOLD}NoizDNS QR Code${NC}"
+        echo ""
+        qrencode -t UTF8 -m 2 "$noizdns_config"
+    fi
 }
 
 # ─── Configuration ────────────────────────────────────────────────────────────
