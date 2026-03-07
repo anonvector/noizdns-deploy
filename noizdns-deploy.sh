@@ -218,22 +218,6 @@ generate_slipnet_configs() {
     # Extract short label from domain (e.g., "t.example.com" → "example")
     local short_name
     short_name=$(echo "$NS_SUBDOMAIN" | awk -F. '{if(NF>=2) print $(NF-1); else print $1}')
-    local ssh_port="${SSH_PORT:-22}"
-
-    if [ "$TUNNEL_MODE" = "ssh" ]; then
-        echo ""
-        print_line
-        echo -e "  ${BOLD}SlipNet Config Links${NC}"
-        print_line
-        echo ""
-        echo -e "  ${YELLOW}SSH mode requires per-user credentials.${NC}"
-        echo -e "  Config links are only generated for SOCKS mode."
-        echo -e "  Use ${WHITE}User Management${NC} to create users, then configure"
-        echo -e "  the profile manually in the SlipNet app."
-        print_line
-        return
-    fi
-
     local dnstt_data="16|dnstt|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
     local noizdns_data="16|sayedns|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
 
@@ -272,8 +256,7 @@ save_config() {
 # Generated on $(date)
 NS_SUBDOMAIN="$NS_SUBDOMAIN"
 MTU_VALUE="$MTU_VALUE"
-TUNNEL_MODE="$TUNNEL_MODE"
-SSH_PORT="$SSH_PORT"
+TUNNEL_MODE="socks"
 PRIVATE_KEY_FILE="$PRIVATE_KEY_FILE"
 PUBLIC_KEY_FILE="$PUBLIC_KEY_FILE"
 EOF
@@ -315,52 +298,14 @@ get_user_input() {
     read -r MTU_VALUE
     MTU_VALUE=${MTU_VALUE:-${existing_mtu:-1232}}
 
-    # Tunnel mode
-    while true; do
-        echo ""
-        echo "  Tunnel mode:"
-        echo "    1) SSH   — forward to local SSH server"
-        echo "    2) SOCKS — forward to Dante SOCKS5 proxy"
-        if [[ -n "$existing_mode" ]]; then
-            local mode_num="1"
-            [[ "$existing_mode" == "socks" ]] && mode_num="2"
-            print_question "Choice [${mode_num}]: "
-        else
-            print_question "Choice [1]: "
-        fi
-        read -r mode_input
-
-        if [[ -z "$mode_input" && -n "$existing_mode" ]]; then
-            TUNNEL_MODE="$existing_mode"
-            break
-        fi
-
-        case ${mode_input:-1} in
-            1) TUNNEL_MODE="ssh";   break ;;
-            2) TUNNEL_MODE="socks"; break ;;
-            *) print_error "Enter 1 or 2" ;;
-        esac
-    done
-
-    # SSH port (only for ssh mode)
-    if [ "$TUNNEL_MODE" = "ssh" ]; then
-        local detected_port
-        detected_port=$(detect_ssh_port)
-        local default_port="${SSH_PORT:-$detected_port}"
-        echo ""
-        echo -e "  ${CYAN}SSH Port${NC}"
-        echo -e "  Auto-detected: ${YELLOW}${detected_port}${NC}"
-        print_question "SSH port [${default_port}]: "
-        read -r ssh_port_input
-        SSH_PORT="${ssh_port_input:-$default_port}"
-    fi
+    # Tunnel mode — SOCKS only
+    TUNNEL_MODE="socks"
 
     echo ""
     print_line
     print_status "Domain:      $NS_SUBDOMAIN"
     print_status "MTU:         $MTU_VALUE"
     print_status "Tunnel mode: $TUNNEL_MODE"
-    [ "$TUNNEL_MODE" = "ssh" ] && print_status "SSH port:    $SSH_PORT"
     print_line
 }
 
@@ -497,37 +442,10 @@ EOF
 
 # ─── SSH Port Detection ──────────────────────────────────────────────────────
 
-detect_ssh_port() {
-    local port
-    # 1. Use sshd -T (most reliable — reads actual config including Match blocks)
-    port=$(sshd -T 2>/dev/null | awk '/^port / {print $2; exit}')
-    # 2. Fallback: parse sshd_config directly
-    if [ -z "$port" ]; then
-        port=$(grep -iE '^\s*Port\s+' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1)
-    fi
-    # 3. Fallback: check ss for listening sshd
-    if [ -z "$port" ]; then
-        port=$(ss -tlnp 2>/dev/null | grep -w sshd | awk '{print $4}' | grep -oE '[0-9]+$' | head -1)
-    fi
-    echo "${port:-22}"
-}
-
 # ─── Systemd Service ─────────────────────────────────────────────────────────
 
 create_systemd_service() {
-    local target_port
-    if [ "$TUNNEL_MODE" = "ssh" ]; then
-        if [ -n "$SSH_PORT" ]; then
-            target_port="$SSH_PORT"
-            print_status "Using configured SSH port: $target_port"
-        else
-            target_port=$(detect_ssh_port)
-            SSH_PORT="$target_port"
-            print_status "SSH port detected: $target_port"
-        fi
-    else
-        target_port="1080"
-    fi
+    local target_port="1080"
 
     # Stop existing service
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
@@ -609,9 +527,7 @@ show_configuration_info() {
     print_line
     echo -e "  Domain:  ${YELLOW}$NS_SUBDOMAIN${NC}"
     echo -e "  MTU:     ${YELLOW}$MTU_VALUE${NC}"
-    echo -e "  Mode:    ${YELLOW}$TUNNEL_MODE${NC}"
     echo -e "  DNS Port: ${YELLOW}$DNSTT_PORT${NC} (redirected from 53)"
-    [ "$TUNNEL_MODE" = "ssh" ] && echo -e "  SSH Port: ${YELLOW}${SSH_PORT:-$(detect_ssh_port)}${NC}"
     echo -e "  Status:  $status_text"
     echo ""
 
@@ -625,10 +541,8 @@ show_configuration_info() {
     echo -e "  Auto-detects both ${GREEN}dnstt${NC} and ${GREEN}NoizDNS${NC} clients."
     print_line
 
-    if [ "$TUNNEL_MODE" = "socks" ]; then
-        echo ""
-        echo -e "  ${CYAN}SOCKS Proxy:${NC} 127.0.0.1:1080"
-    fi
+    echo ""
+    echo -e "  ${CYAN}SOCKS Proxy:${NC} 127.0.0.1:1080"
 
     local user_count=0
     if [ -f "$USERS_FILE" ]; then
@@ -705,10 +619,6 @@ add_user() {
     print_line
 
     local shell="/usr/sbin/nologin"
-    if [ "$TUNNEL_MODE" = "ssh" ]; then
-        shell="/bin/bash"
-    fi
-    echo -e "  Mode: ${YELLOW}${TUNNEL_MODE}${NC} (shell: ${shell})"
     echo ""
 
     # Username
@@ -764,10 +674,8 @@ add_user() {
 
     print_status "User '$username' created (shell: $shell)"
 
-    # Enable Dante auth on first SOCKS user
-    if [ "$TUNNEL_MODE" = "socks" ]; then
-        enable_dante_auth
-    fi
+    # Enable Dante auth on first user
+    enable_dante_auth
 }
 
 remove_user() {
@@ -842,7 +750,6 @@ list_users() {
 
     echo ""
     local shell_expected="/usr/sbin/nologin"
-    [ "$TUNNEL_MODE" = "ssh" ] && shell_expected="/bin/bash"
 
     local warned=false
     while IFS= read -r user; do
@@ -965,7 +872,7 @@ user_management_menu() {
     while true; do
         echo ""
         print_line
-        echo -e "  ${BOLD}User Management${NC} (mode: ${YELLOW}${TUNNEL_MODE}${NC})"
+        echo -e "  ${BOLD}User Management${NC}"
         print_line
 
         local user_count=0
@@ -1265,16 +1172,8 @@ do_install() {
     # Firewall
     configure_firewall
 
-    # Tunnel mode setup
-    if [ "$TUNNEL_MODE" = "socks" ]; then
-        setup_dante
-    else
-        if systemctl is-active --quiet danted 2>/dev/null; then
-            print_status "Stopping Dante (switching to SSH mode)..."
-            systemctl stop danted
-            systemctl disable danted
-        fi
-    fi
+    # Setup Dante SOCKS proxy
+    setup_dante
 
     # Systemd service
     create_systemd_service
