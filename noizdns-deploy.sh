@@ -219,8 +219,23 @@ generate_slipnet_configs() {
     local short_name
     short_name=$(echo "$NS_SUBDOMAIN" | awk -F. '{if(NF>=2) print $(NF-1); else print $1}')
     local ssh_port="${SSH_PORT:-22}"
-    local dnstt_data="16|dnstt|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
-    local noizdns_data="16|sayedns|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+
+    if [ "$TUNNEL_MODE" = "ssh" ]; then
+        echo ""
+        print_line
+        echo -e "  ${BOLD}SlipNet Config Links${NC}"
+        print_line
+        echo ""
+        echo -e "  ${YELLOW}SSH mode requires per-user credentials.${NC}"
+        echo -e "  Config links are only generated for SOCKS mode."
+        echo -e "  Use ${WHITE}User Management${NC} to create users, then configure"
+        echo -e "  the profile manually in the SlipNet app."
+        print_line
+        return
+    fi
+
+    local dnstt_data="16|dnstt|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+    local noizdns_data="16|sayedns|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
 
     local dnstt_config="slipnet://$(echo -n "$dnstt_data" | base64 -w0)"
     local noizdns_config="slipnet://$(echo -n "$noizdns_data" | base64 -w0)"
