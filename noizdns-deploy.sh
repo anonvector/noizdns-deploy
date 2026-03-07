@@ -9,7 +9,7 @@
 
 set -e
 
-SCRIPT_VERSION="1.2.0"
+SCRIPT_VERSION="1.3.0"
 SCRIPT_URL="https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/noizdns-deploy.sh"
 
 # Check if running as root
@@ -40,12 +40,95 @@ SERVICE_NAME="noizdns-server"
 USERS_FILE="${CONFIG_DIR}/users.txt"
 RELEASE_URL="https://github.com/anonvector/noizdns-deploy/releases/latest/download"
 
+# CLI argument variables (for non-interactive mode)
+CLI_DOMAIN=""
+CLI_MTU=""
+CLI_PUBKEY_FILE=""
+CLI_PRIVKEY_FILE=""
+AUTO_MODE=false
+
 # Printing helpers
 print_status()   { echo -e "${GREEN}[+]${NC} $1"; }
 print_warning()  { echo -e "${YELLOW}[!]${NC} $1"; }
 print_error()    { echo -e "${RED}[-]${NC} $1"; }
 print_question() { echo -ne "${BLUE}[?]${NC} $1"; }
 print_line()     { echo -e "${CYAN}────────────────────────────────────────────${NC}"; }
+
+# ─── CLI Argument Parsing ────────────────────────────────────────────────────
+
+usage() {
+    echo "Usage: noizdns [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  -d, --domain <domain>       Tunnel domain (e.g. t.example.com)"
+    echo "  -m, --mtu <value>           MTU value (default: 1232)"
+    echo "      --pubkey-file <path>    Path to existing public key file"
+    echo "      --privkey-file <path>   Path to existing private key file"
+    echo "  -h, --help                  Show this help message"
+    echo ""
+    echo "When --domain is provided, the script runs non-interactively"
+    echo "for automated deployments. Keys are auto-generated if not provided."
+    echo ""
+    echo "Examples:"
+    echo "  noizdns                                        # Interactive menu"
+    echo "  noizdns --domain t.example.com                 # Auto-install, generate keys"
+    echo "  noizdns --domain t.example.com --mtu 1400      # Custom MTU"
+    echo "  noizdns --domain t.example.com \\"
+    echo "    --privkey-file /path/server.key \\"
+    echo "    --pubkey-file /path/server.pub                # Use existing keys"
+}
+
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -d|--domain)
+                CLI_DOMAIN="$2"
+                shift 2
+                ;;
+            -m|--mtu)
+                CLI_MTU="$2"
+                shift 2
+                ;;
+            --pubkey-file)
+                CLI_PUBKEY_FILE="$2"
+                shift 2
+                ;;
+            --privkey-file)
+                CLI_PRIVKEY_FILE="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                print_error "Unknown option: $1"
+                usage
+                exit 1
+                ;;
+        esac
+    done
+
+    if [[ -n "$CLI_DOMAIN" ]]; then
+        AUTO_MODE=true
+    fi
+
+    # If one key file is given, both must be given
+    if [[ -n "$CLI_PUBKEY_FILE" || -n "$CLI_PRIVKEY_FILE" ]]; then
+        if [[ -z "$CLI_PUBKEY_FILE" || -z "$CLI_PRIVKEY_FILE" ]]; then
+            print_error "Both --pubkey-file and --privkey-file must be provided together"
+            exit 1
+        fi
+        if [[ ! -f "$CLI_PUBKEY_FILE" ]]; then
+            print_error "Public key file not found: $CLI_PUBKEY_FILE"
+            exit 1
+        fi
+        if [[ ! -f "$CLI_PRIVKEY_FILE" ]]; then
+            print_error "Private key file not found: $CLI_PRIVKEY_FILE"
+            exit 1
+        fi
+    fi
+}
 
 # ─── OS / Arch Detection ─────────────────────────────────────────────────────
 
@@ -162,6 +245,21 @@ generate_keys() {
     PRIVATE_KEY_FILE="${CONFIG_DIR}/${key_prefix}_server.key"
     PUBLIC_KEY_FILE="${CONFIG_DIR}/${key_prefix}_server.pub"
 
+    # Auto mode with provided key files: copy them in
+    if [ "$AUTO_MODE" = true ] && [[ -n "$CLI_PRIVKEY_FILE" && -n "$CLI_PUBKEY_FILE" ]]; then
+        print_status "Using provided key files..."
+        cp "$CLI_PRIVKEY_FILE" "$PRIVATE_KEY_FILE"
+        cp "$CLI_PUBKEY_FILE" "$PUBLIC_KEY_FILE"
+        chown "$SERVICE_USER":"$SERVICE_USER" "$PRIVATE_KEY_FILE" "$PUBLIC_KEY_FILE"
+        chmod 600 "$PRIVATE_KEY_FILE"
+        chmod 644 "$PUBLIC_KEY_FILE"
+        echo ""
+        echo -e "  ${CYAN}Public Key:${NC}"
+        echo -e "  ${YELLOW}$(cat "$PUBLIC_KEY_FILE")${NC}"
+        echo ""
+        return 0
+    fi
+
     if [[ -f "$PRIVATE_KEY_FILE" && -f "$PUBLIC_KEY_FILE" ]]; then
         print_status "Existing keys found for $NS_SUBDOMAIN"
         chown "$SERVICE_USER":"$SERVICE_USER" "$PRIVATE_KEY_FILE" "$PUBLIC_KEY_FILE"
@@ -171,6 +269,11 @@ generate_keys() {
         echo -e "  ${CYAN}Public Key:${NC}"
         echo -e "  ${YELLOW}$(cat "$PUBLIC_KEY_FILE")${NC}"
         echo ""
+
+        # Auto mode without provided keys: reuse existing
+        if [ "$AUTO_MODE" = true ]; then
+            return 0
+        fi
 
         print_question "Regenerate keys? [y/N]: "
         read -r regen
@@ -277,6 +380,20 @@ EOF
 }
 
 get_user_input() {
+    # Non-interactive mode: use CLI arguments
+    if [ "$AUTO_MODE" = true ]; then
+        NS_SUBDOMAIN="$CLI_DOMAIN"
+        MTU_VALUE="${CLI_MTU:-1232}"
+        TUNNEL_MODE="socks"
+        echo ""
+        print_line
+        print_status "Domain:      $NS_SUBDOMAIN"
+        print_status "MTU:         $MTU_VALUE"
+        print_status "Tunnel mode: $TUNNEL_MODE"
+        print_line
+        return 0
+    fi
+
     local existing_domain="" existing_mtu="" existing_mode=""
 
     if load_existing_config; then
@@ -1145,16 +1262,29 @@ handle_menu() {
 # ─── Install Script to PATH ──────────────────────────────────────────────────
 
 install_script() {
+    # When run via "curl ... | bash", $0 is "bash" (not a file path).
+    # In that case, download the script from GitHub instead of copying $0.
+    local source="$0"
+    if [ ! -f "$source" ]; then
+        source="/tmp/noizdns-deploy-self.sh"
+        if ! curl -sL "$SCRIPT_URL" -o "$source" 2>/dev/null; then
+            print_warning "Could not download script to install to PATH"
+            return 1
+        fi
+    fi
+
     if [ -f "$SCRIPT_INSTALL_PATH" ]; then
         local cur new
         cur=$(sha256sum "$SCRIPT_INSTALL_PATH" | cut -d' ' -f1)
-        new=$(sha256sum "$0" | cut -d' ' -f1)
+        new=$(sha256sum "$source" | cut -d' ' -f1)
         if [ "$cur" = "$new" ]; then
+            rm -f /tmp/noizdns-deploy-self.sh 2>/dev/null || true
             return 0
         fi
     fi
-    cp "$0" "$SCRIPT_INSTALL_PATH"
+    cp "$source" "$SCRIPT_INSTALL_PATH"
     chmod +x "$SCRIPT_INSTALL_PATH"
+    rm -f /tmp/noizdns-deploy-self.sh 2>/dev/null || true
     print_status "Script installed to $SCRIPT_INSTALL_PATH"
     print_status "Run ${WHITE}noizdns${NC} anytime for the management menu"
 }
@@ -1203,10 +1333,17 @@ do_install() {
 # ─── Entry Point ──────────────────────────────────────────────────────────────
 
 main() {
+    parse_args "$@"
     show_banner
 
     # Install script to PATH
     install_script
+
+    # Non-interactive auto-install when --domain is provided
+    if [ "$AUTO_MODE" = true ]; then
+        do_install
+        exit 0
+    fi
 
     # If running from installed location, show interactive menu
     if [ "$(realpath "$0" 2>/dev/null || echo "$0")" = "$SCRIPT_INSTALL_PATH" ]; then

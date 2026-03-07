@@ -34,7 +34,8 @@ Replace `example.com` with your domain. The `t` subdomain is the tunnel endpoint
 
 - **Multi-distro**: Fedora, Rocky Linux, CentOS, Debian, Ubuntu
 - **Auto-download**: Pre-built server binary downloaded from GitHub releases
-- **Tunnel modes**: SSH forwarding or SOCKS5 proxy (Dante)
+- **Non-interactive mode**: CLI flags for fully automated deployments
+- **SOCKS5 proxy**: Dante-based SOCKS proxy with optional user authentication
 - **Systemd integration**: Auto-start, restart on failure, security hardening
 - **Firewall**: Automatic iptables/firewalld/ufw configuration with persistence
 - **Key management**: Auto-generates keypairs, reuses existing keys on reconfiguration
@@ -43,7 +44,7 @@ Replace `example.com` with your domain. The `t` subdomain is the tunnel endpoint
 
 ## Usage
 
-### First Install
+### Interactive Install
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/noizdns-deploy.sh)
@@ -52,7 +53,39 @@ bash <(curl -Ls https://raw.githubusercontent.com/anonvector/noizdns-deploy/main
 The script will prompt for:
 1. **Tunnel domain** — e.g. `t.example.com`
 2. **MTU** — default `1232`
-3. **Tunnel mode** — SSH (forward to local sshd) or SOCKS (Dante proxy)
+
+### Non-Interactive Install (Automated)
+
+Pass `--domain` to skip all prompts and run a fully automated deployment:
+
+```bash
+# Auto-install with defaults (generates new keys)
+noizdns --domain t.example.com
+
+# Custom MTU
+noizdns --domain t.example.com --mtu 1400
+
+# Use existing key files
+noizdns --domain t.example.com \
+  --privkey-file /path/to/server.key \
+  --pubkey-file /path/to/server.pub
+
+# One-liner via curl
+bash <(curl -Ls https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/noizdns-deploy.sh) \
+  --domain t.example.com
+```
+
+#### CLI Options
+
+| Flag | Description |
+|---|---|
+| `-d, --domain <domain>` | Tunnel domain (required for auto mode) |
+| `-m, --mtu <value>` | MTU value (default: 1232) |
+| `--pubkey-file <path>` | Path to existing public key file |
+| `--privkey-file <path>` | Path to existing private key file |
+| `-h, --help` | Show help |
+
+> When `--domain` is provided, the script runs non-interactively. Keys are auto-generated if not provided, or reused if they already exist on the server. If providing key files, both `--pubkey-file` and `--privkey-file` are required.
 
 ### Management
 
@@ -92,7 +125,7 @@ journalctl -u noizdns-server -f   # Live logs
 
 ## Uninstall
 
-From the menu, select option **10**. This removes:
+From the menu, select option **11**. This removes:
 - Systemd service
 - Server binary
 - Configuration and keys
