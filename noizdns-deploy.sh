@@ -1035,6 +1035,9 @@ show_banner() {
 }
 
 show_menu() {
+    clear
+    show_banner
+
     # Check if installed
     local installed=false
     if is_installed; then installed=true; fi
