@@ -9,8 +9,8 @@
 
 set -e
 
-SCRIPT_VERSION="1.3.0"
-SCRIPT_URL="https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/noizdns-deploy.sh"
+SCRIPT_VERSION="1.4.0"
+SCRIPT_URL="https://raw.githubusercontent.com/anonvector/noizdns-deploy/dev/noizdns-deploy.sh"
 
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
@@ -34,9 +34,15 @@ CONFIG_DIR="/etc/noizdns"
 SYSTEMD_DIR="/etc/systemd/system"
 DNSTT_PORT="5300"
 SERVICE_USER="noizdns"
+SERVICE_GROUP="noizdns"
 CONFIG_FILE="${CONFIG_DIR}/server.conf"
 SCRIPT_INSTALL_PATH="/usr/local/bin/noizdns"
 SERVICE_NAME="noizdns-server"
+SERVICE_NAME_SSH="noizdns-server-ssh"
+DNSDIST_SERVICE_NAME="noizdns-dns"
+# Port allocation (dnsdist on 5300, backends on 5301+)
+DNSTT_SOCKS_PORT="5301"
+DNSTT_SSH_PORT="5302"
 USERS_FILE="${CONFIG_DIR}/users.txt"
 RELEASE_URL="https://github.com/anonvector/noizdns-deploy/releases/latest/download"
 
@@ -53,6 +59,19 @@ print_warning()  { echo -e "${YELLOW}[!]${NC} $1"; }
 print_error()    { echo -e "${RED}[-]${NC} $1"; }
 print_question() { echo -ne "${BLUE}[?]${NC} $1"; }
 print_line()     { echo -e "${CYAN}────────────────────────────────────────────${NC}"; }
+
+# Strip invisible/non-ASCII characters from input
+sanitize_domain() {
+    echo "$1" | tr -cd 'a-zA-Z0-9._-'
+}
+
+# Derive SSH subdomain: t.example.com -> t2.example.com
+derive_ssh_domain() {
+    local domain="$1"
+    local first_label="${domain%%.*}"
+    local rest="${domain#*.}"
+    echo "${first_label}2.${rest}"
+}
 
 # ─── CLI Argument Parsing ────────────────────────────────────────────────────
 
@@ -179,13 +198,25 @@ install_dependencies() {
 
     case $PKG_MANAGER in
         dnf|yum)
-            $PKG_MANAGER install -y curl iptables iptables-services 2>/dev/null || true
+            $PKG_MANAGER install -y epel-release 2>/dev/null || true
+            $PKG_MANAGER install -y curl iptables iptables-services dnsdist 2>/dev/null || true
             ;;
         apt)
             apt update -qq
-            apt install -y curl iptables 2>/dev/null || true
+            DEBIAN_FRONTEND=noninteractive apt install -y curl iptables dnsdist 2>/dev/null || true
             ;;
     esac
+}
+
+# ─── SSH Port Detection ──────────────────────────────────────────────────────
+
+detect_ssh_port() {
+    SSH_PORT=$(grep -E "^Port " /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1)
+    if [ -z "$SSH_PORT" ]; then
+        SSH_PORT=$(ss -tlnp 2>/dev/null | grep sshd | awk '{print $4}' | grep -oE '[0-9]+$' | head -1)
+    fi
+    SSH_PORT=${SSH_PORT:-22}
+    print_status "SSH port: $SSH_PORT"
 }
 
 # ─── Download Binary ─────────────────────────────────────────────────────────
@@ -230,6 +261,8 @@ create_service_user() {
     else
         print_status "User $SERVICE_USER already exists"
     fi
+
+    groupadd -f "$SERVICE_GROUP"
 
     mkdir -p "$CONFIG_DIR"
     touch "$USERS_FILE" && chmod 640 "$USERS_FILE"
@@ -309,37 +342,88 @@ generate_slipnet_configs() {
         return
     fi
 
-    # v16 pipe-delimited format, base64 encoded with slipnet:// scheme
-    # Fields: version|tunnelType|name|domain|resolvers|authMode|keepAlive|cc|port|host|gso|
-    #         dnsttPublicKey|socksUser|socksPass|sshEnabled|sshUser|sshPass|sshPort|
-    #         fwdDns|sshHost|useServerDns|dohUrl|dnsTransport|sshAuthType|sshPrivKey|
-    #         sshKeyPass|torBridges|dnsttAuthoritative|naivePort|naiveUser|naivePass|
-    #         isLocked|lockHash|expiration|allowSharing|boundDeviceId
-
-    # Default resolver: 8.8.8.8:53 (user can change in app or use DNS scanner)
     local default_resolver="8.8.8.8:53:0"
-    # Extract short label from domain (e.g., "t.example.com" → "example")
     local short_name
     short_name=$(echo "$NS_SUBDOMAIN" | awk -F. '{if(NF>=2) print $(NF-1); else print $1}')
-    local dnstt_data="16|dnstt|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
-    local noizdns_data="16|sayedns|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}||||||22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+    local ssh_port="${SSH_PORT:-22}"
+    local ssh_domain
+    ssh_domain=$(derive_ssh_domain "$NS_SUBDOMAIN")
 
-    local dnstt_config="slipnet://$(echo -n "$dnstt_data" | base64 -w0)"
-    local noizdns_config="slipnet://$(echo -n "$noizdns_data" | base64 -w0)"
+    # Use initial user credentials if available (fresh install)
+    local socks_user="${INITIAL_USER:-}"
+    local socks_pass="${INITIAL_PASS:-}"
+
+    # If no fresh credentials but auth is enabled, show per-user links
+    if [ -z "$socks_user" ] && grep -q "^socksmethod: username" /etc/danted.conf 2>/dev/null; then
+        if [ -f "$USERS_FILE" ] && [ -s "$USERS_FILE" ]; then
+            echo ""
+            print_line
+            echo -e "  ${BOLD}SlipNet Config Links${NC} (per-user, auth required)"
+            print_line
+
+            while IFS= read -r socks_user; do
+                echo ""
+                echo -e "  ${BOLD}User: ${socks_user}${NC}"
+                # SOCKS configs
+                local dnstt_data="16|dnstt|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}|||||${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+                local noizdns_data="16|sayedns|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}|||||${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+                echo -e "  ${CYAN}DNSTT:${NC}   ${WHITE}slipnet://$(echo -n "$dnstt_data" | base64 -w0)${NC}"
+                echo -e "  ${CYAN}NoizDNS:${NC} ${WHITE}slipnet://$(echo -n "$noizdns_data" | base64 -w0)${NC}"
+                # SSH configs
+                local dnstt_ssh_data="16|dnstt_ssh|${short_name} SSH|${ssh_domain}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|||1|${socks_user}||${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+                local noizdns_ssh_data="16|sayedns_ssh|${short_name} SSH|${ssh_domain}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|||1|${socks_user}||${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+                echo -e "  ${CYAN}DNSTT+SSH:${NC}   ${WHITE}slipnet://$(echo -n "$dnstt_ssh_data" | base64 -w0)${NC}"
+                echo -e "  ${CYAN}NoizDNS+SSH:${NC} ${WHITE}slipnet://$(echo -n "$noizdns_ssh_data" | base64 -w0)${NC}"
+            done < "$USERS_FILE"
+
+            echo ""
+            echo -e "  ${YELLOW}Note:${NC} Set the password in the app after importing."
+            print_line
+            return
+        fi
+    fi
+
+    # Determine which config types to show
+    local mode="${CONFIG_MODE:-both}"
+    local show_socks=false show_ssh=false
+    case $mode in
+        socks) show_socks=true ;;
+        ssh)   show_ssh=true ;;
+        *)     show_socks=true; show_ssh=true ;;
+    esac
 
     echo ""
     print_line
     echo -e "  ${BOLD}SlipNet Config Links${NC}"
     print_line
+
+    # SOCKS configs
+    if [ "$show_socks" = true ]; then
+        local dnstt_data="16|dnstt|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}|${socks_pass}||||${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+        local noizdns_data="16|sayedns|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}|${socks_pass}||||${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+        echo ""
+        echo -e "  ${CYAN}DNSTT:${NC}"
+        echo -e "  ${WHITE}slipnet://$(echo -n "$dnstt_data" | base64 -w0)${NC}"
+        echo ""
+        echo -e "  ${CYAN}NoizDNS:${NC}"
+        echo -e "  ${WHITE}slipnet://$(echo -n "$noizdns_data" | base64 -w0)${NC}"
+    fi
+
+    # SSH configs
+    if [ "$show_ssh" = true ] && [ -n "$socks_user" ]; then
+        local dnstt_ssh_data="16|dnstt_ssh|${short_name} SSH|${ssh_domain}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|||1|${socks_user}|${socks_pass}|${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+        local noizdns_ssh_data="16|sayedns_ssh|${short_name} SSH|${ssh_domain}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|||1|${socks_user}|${socks_pass}|${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+        echo ""
+        echo -e "  ${CYAN}DNSTT + SSH:${NC}"
+        echo -e "  ${WHITE}slipnet://$(echo -n "$dnstt_ssh_data" | base64 -w0)${NC}"
+        echo ""
+        echo -e "  ${CYAN}NoizDNS + SSH:${NC}"
+        echo -e "  ${WHITE}slipnet://$(echo -n "$noizdns_ssh_data" | base64 -w0)${NC}"
+    fi
+
     echo ""
-    echo -e "  ${CYAN}DNSTT:${NC}"
-    echo -e "  ${WHITE}${dnstt_config}${NC}"
-    echo ""
-    echo -e "  ${CYAN}NoizDNS:${NC}"
-    echo -e "  ${WHITE}${noizdns_config}${NC}"
-    echo ""
-    echo -e "  ${CYAN}How to use:${NC} Copy a link above and paste in SlipNet app"
-    echo -e "  (Profile → Import → Paste config link)"
+    echo -e "  ${CYAN}How to use:${NC} Copy a link and paste in SlipNet app"
+    echo -e "  (Profile -> Import -> Paste config link)"
     print_line
 }
 
@@ -348,6 +432,7 @@ generate_slipnet_configs() {
 load_existing_config() {
     if [ -f "$CONFIG_FILE" ]; then
         . "$CONFIG_FILE"
+        NS_SUBDOMAIN=$(sanitize_domain "$NS_SUBDOMAIN")
         return 0
     fi
     return 1
@@ -362,6 +447,7 @@ MTU_VALUE="$MTU_VALUE"
 TUNNEL_MODE="socks"
 PRIVATE_KEY_FILE="$PRIVATE_KEY_FILE"
 PUBLIC_KEY_FILE="$PUBLIC_KEY_FILE"
+SSH_PORT="$SSH_PORT"
 EOF
     chmod 640 "$CONFIG_FILE"
     chown root:"$SERVICE_USER" "$CONFIG_FILE"
@@ -370,7 +456,7 @@ EOF
 get_user_input() {
     # Non-interactive mode: use CLI arguments
     if [ "$AUTO_MODE" = true ]; then
-        NS_SUBDOMAIN="$CLI_DOMAIN"
+        NS_SUBDOMAIN=$(sanitize_domain "$CLI_DOMAIN")
         MTU_VALUE="${CLI_MTU:-1232}"
         TUNNEL_MODE="socks"
         echo ""
@@ -401,7 +487,7 @@ get_user_input() {
             print_question "Tunnel domain (e.g. t.example.com): "
         fi
         read -r NS_SUBDOMAIN
-        NS_SUBDOMAIN=${NS_SUBDOMAIN:-$existing_domain}
+        NS_SUBDOMAIN=$(sanitize_domain "${NS_SUBDOMAIN:-$existing_domain}")
         [[ -n "$NS_SUBDOMAIN" ]] && break
         print_error "Domain is required"
     done
@@ -557,7 +643,33 @@ EOF
     print_status "Dante running on 127.0.0.1:1080"
 }
 
-# ─── SSH Port Detection ──────────────────────────────────────────────────────
+# ─── SSH Tunneling Setup ─────────────────────────────────────────────────────
+
+setup_ssh_tunneling() {
+    print_status "Configuring SSH for tunnel-only access..."
+    local sshd_config="/etc/ssh/sshd_config"
+    groupadd -f "$SERVICE_GROUP"
+
+    if grep -q "# NoizDNS SSH tunneling" "$sshd_config" 2>/dev/null; then
+        print_status "SSH tunneling already configured"
+        return 0
+    fi
+
+    cat >> "$sshd_config" << SSHEOF
+
+# NoizDNS SSH tunneling — restrict managed users to port forwarding only
+Match Group ${SERVICE_GROUP}
+    AllowTcpForwarding yes
+    X11Forwarding no
+    PermitTunnel no
+    AllowAgentForwarding no
+    GatewayPorts no
+    ForceCommand /usr/sbin/nologin
+SSHEOF
+
+    systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
+    print_status "SSH configured: ${SERVICE_GROUP} group restricted to port forwarding"
+}
 
 # ─── Systemd Service ─────────────────────────────────────────────────────────
 
@@ -569,8 +681,8 @@ create_systemd_service() {
 
     cat > "${SYSTEMD_DIR}/${SERVICE_NAME}.service" << EOF
 [Unit]
-Description=NoizDNS Server (dnstt + NoizDNS auto-detected)
-After=network.target
+Description=NoizDNS SOCKS Server (dnstt -> Dante)
+After=network.target danted.service
 Wants=network.target
 
 [Service]
@@ -579,8 +691,8 @@ User=$SERVICE_USER
 Group=$SERVICE_USER
 Environment=TOR_PT_MANAGED_TRANSPORT_VER=1
 Environment=TOR_PT_SERVER_TRANSPORTS=dnstt
-Environment=TOR_PT_SERVER_BINDADDR=dnstt-0.0.0.0:${DNSTT_PORT}
-Environment=TOR_PT_ORPORT=127.0.0.1:${target_port}
+Environment=TOR_PT_SERVER_BINDADDR=dnstt-0.0.0.0:${DNSTT_SOCKS_PORT}
+Environment=TOR_PT_ORPORT=127.0.0.1:1080
 ExecStart=${INSTALL_DIR}/dnstt-server -privkey-file ${PRIVATE_KEY_FILE} -mtu ${MTU_VALUE} ${NS_SUBDOMAIN}
 Restart=always
 RestartSec=5
@@ -609,10 +721,108 @@ EOF
     print_status "Tunneling to 127.0.0.1:$target_port ($TUNNEL_MODE)"
 }
 
+# ─── DNSTT SSH Service ───────────────────────────────────────────────────────
+
+create_dnstt_ssh_service() {
+    local ssh_domain
+    ssh_domain=$(derive_ssh_domain "$NS_SUBDOMAIN")
+
+    print_status "Creating DNSTT SSH service for $ssh_domain..."
+    systemctl stop "$SERVICE_NAME_SSH" 2>/dev/null || true
+
+    cat > "${SYSTEMD_DIR}/${SERVICE_NAME_SSH}.service" << EOF
+[Unit]
+Description=NoizDNS SSH Server (dnstt -> SSH:${SSH_PORT})
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=$SERVICE_USER
+Group=$SERVICE_USER
+Environment=TOR_PT_MANAGED_TRANSPORT_VER=1
+Environment=TOR_PT_SERVER_TRANSPORTS=dnstt
+Environment=TOR_PT_SERVER_BINDADDR=dnstt-0.0.0.0:${DNSTT_SSH_PORT}
+Environment=TOR_PT_ORPORT=127.0.0.1:${SSH_PORT}
+ExecStart=${INSTALL_DIR}/dnstt-server -privkey-file ${PRIVATE_KEY_FILE} -mtu ${MTU_VALUE} ${ssh_domain}
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/
+ReadWritePaths=${CONFIG_DIR}
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable "$SERVICE_NAME_SSH"
+    print_status "DNSTT SSH service: $ssh_domain -> SSH:${SSH_PORT} (port ${DNSTT_SSH_PORT})"
+}
+
+# ─── DNS Router (dnsdist) ────────────────────────────────────────────────────
+
+setup_dnsdist() {
+    print_status "Setting up DNS router (dnsdist)..."
+
+    # Disable default dnsdist service
+    systemctl disable --now dnsdist 2>/dev/null || true
+
+    local dnstt_ssh_domain
+    dnstt_ssh_domain=$(derive_ssh_domain "$NS_SUBDOMAIN")
+
+    cat > "${CONFIG_DIR}/dnsdist.conf" << EOF
+-- NoizDNS DNS Router
+setLocal("127.0.0.1:${DNSTT_PORT}")
+
+newServer({address="127.0.0.1:${DNSTT_SOCKS_PORT}", name="dnstt-socks", pool="dnstt-socks"})
+newServer({address="127.0.0.1:${DNSTT_SSH_PORT}", name="dnstt-ssh", pool="dnstt-ssh"})
+
+addAction(SuffixMatchNodeRule({"${NS_SUBDOMAIN}."}), PoolAction("dnstt-socks"))
+addAction(SuffixMatchNodeRule({"${dnstt_ssh_domain}."}), PoolAction("dnstt-ssh"))
+
+addAction(AllRule(), DropAction())
+EOF
+
+    chown "$SERVICE_USER":"$SERVICE_USER" "${CONFIG_DIR}/dnsdist.conf"
+
+    cat > "${SYSTEMD_DIR}/${DNSDIST_SERVICE_NAME}.service" << EOF
+[Unit]
+Description=NoizDNS DNS Router (dnsdist)
+After=network.target
+Before=${SERVICE_NAME}.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/dnsdist --supervised --disable-syslog -C ${CONFIG_DIR}/dnsdist.conf
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now "$DNSDIST_SERVICE_NAME"
+    print_status "dnsdist routing: ${NS_SUBDOMAIN} -> SOCKS, ${dnstt_ssh_domain} -> SSH"
+}
+
+# ─── Start Services ──────────────────────────────────────────────────────────
+
 start_services() {
-    print_status "Starting $SERVICE_NAME..."
+    print_status "Starting services..."
+    systemctl start "$DNSDIST_SERVICE_NAME" 2>/dev/null || true
     systemctl start "$SERVICE_NAME"
+    systemctl start "$SERVICE_NAME_SSH"
+    echo ""
     systemctl status "$SERVICE_NAME" --no-pager -l
+    systemctl status "$SERVICE_NAME_SSH" --no-pager -l
 }
 
 # ─── Info Display ─────────────────────────────────────────────────────────────
@@ -638,6 +848,20 @@ show_configuration_info() {
         status_text="${RED}Stopped${NC}"
     fi
 
+    local ssh_status_text
+    if systemctl is-active --quiet "$SERVICE_NAME_SSH" 2>/dev/null; then
+        ssh_status_text="${GREEN}Running${NC}"
+    else
+        ssh_status_text="${RED}Stopped${NC}"
+    fi
+
+    local dns_status_text
+    if systemctl is-active --quiet "$DNSDIST_SERVICE_NAME" 2>/dev/null; then
+        dns_status_text="${GREEN}Running${NC}"
+    else
+        dns_status_text="${RED}Stopped${NC}"
+    fi
+
     echo ""
     print_line
     echo -e "  ${CYAN}Configuration${NC}"
@@ -645,7 +869,7 @@ show_configuration_info() {
     echo -e "  Domain:  ${YELLOW}$NS_SUBDOMAIN${NC}"
     echo -e "  MTU:     ${YELLOW}$MTU_VALUE${NC}"
     echo -e "  DNS Port: ${YELLOW}$DNSTT_PORT${NC} (redirected from 53)"
-    echo -e "  Status:  $status_text"
+    echo -e "  Status:  SOCKS=$status_text  SSH=$ssh_status_text  DNS=$dns_status_text"
     echo ""
 
     if [ -f "$PUBLIC_KEY_FILE" ]; then
@@ -659,7 +883,8 @@ show_configuration_info() {
     print_line
 
     echo ""
-    echo -e "  ${CYAN}SOCKS Proxy:${NC} 127.0.0.1:1080"
+    echo -e "  ${CYAN}SOCKS:${NC} ${NS_SUBDOMAIN} -> Dante:1080"
+    echo -e "  ${CYAN}SSH:${NC}   $(derive_ssh_domain "$NS_SUBDOMAIN") -> SSH:${SSH_PORT:-22}"
 
     local user_count=0
     if [ -f "$USERS_FILE" ]; then
@@ -691,6 +916,7 @@ print_success_box() {
     fi
     echo -e "  ${WHITE}A     ns.${base_domain}  ->  <your-server-ip>${NC}"
     echo -e "  ${WHITE}NS    ${NS_SUBDOMAIN}  ->  ns.${base_domain}${NC}"
+    echo -e "  ${WHITE}NS    $(derive_ssh_domain "$NS_SUBDOMAIN")  ->  ns.${base_domain}${NC}"
     echo ""
     echo -e "  Run ${WHITE}noizdns${NC} anytime for the management menu."
     echo ""
@@ -723,6 +949,123 @@ enable_dante_auth() {
     systemctl restart danted 2>/dev/null && print_status "Dante restarted with username auth" || print_error "Failed to restart Dante"
 }
 
+generate_random_password() {
+    tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16
+}
+
+create_initial_user() {
+    echo ""
+    print_line
+    echo -e "  ${BOLD}Create Initial User${NC}"
+    print_line
+    echo ""
+
+    local username password
+
+    if [ "$AUTO_MODE" = true ]; then
+        username="user1"
+        password=$(generate_random_password)
+        CONFIG_MODE="both"
+        print_status "Auto-generated credentials (SSH + SOCKS):"
+    else
+        print_question "Create user now? [Y/n]: "
+        read -r create_confirm
+        if [[ "$create_confirm" =~ ^[Nn]$ ]]; then
+            print_warning "Skipping — server will be open (no auth). Add a user later via User Management."
+            return 0
+        fi
+
+        echo ""
+        echo -e "  ${WHITE}1)${NC} SOCKS only    — standalone tunnel (DNSTT/NoizDNS)"
+        echo -e "  ${WHITE}2)${NC} SSH only      — SSH tunnel through DNSTT/NoizDNS"
+        echo -e "  ${WHITE}3)${NC} Both          — all config variants"
+        echo ""
+        print_question "Config type [3]: "
+        read -r config_choice
+        case $config_choice in
+            1) CONFIG_MODE="socks" ;;
+            2) CONFIG_MODE="ssh" ;;
+            *) CONFIG_MODE="both" ;;
+        esac
+
+        echo ""
+        print_question "Username [user1]: "
+        read -r username
+        username=${username:-user1}
+
+        if [[ ! "$username" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+            print_error "Invalid username. Using 'user1'"
+            username="user1"
+        fi
+
+        print_question "Password (empty = auto-generate): "
+        read -rs password
+        echo ""
+        if [ -z "$password" ]; then
+            password=$(generate_random_password)
+            print_status "Auto-generated password"
+        fi
+    fi
+
+    # Check if user already exists
+    if id "$username" &>/dev/null || grep -qx "$username" "$USERS_FILE" 2>/dev/null; then
+        print_warning "User '$username' already exists, skipping creation"
+        return 0
+    fi
+
+    # Create Linux user with SSH tunnel access
+    useradd -m -s /bin/bash -G "$SERVICE_GROUP" "$username"
+    echo "$username:$password" | chpasswd
+    echo "$username" >> "$USERS_FILE"
+
+    # Enable Dante auth
+    enable_dante_auth
+
+    echo ""
+    print_line
+    echo -e "  ${BOLD}Credentials (save these!)${NC}"
+    print_line
+    echo -e "  ${CYAN}Username:${NC} ${YELLOW}${username}${NC}"
+    echo -e "  ${CYAN}Password:${NC} ${YELLOW}${password}${NC}"
+    echo ""
+    echo -e "  Works for both ${GREEN}SOCKS proxy${NC} and ${GREEN}SSH tunnel${NC} connections."
+    echo -e "  Add more users anytime via ${WHITE}noizdns${NC} -> User Management."
+    print_line
+
+    # Save credentials temporarily for config link generation
+    INITIAL_USER="$username"
+    INITIAL_PASS="$password"
+}
+
+migrate_existing_users() {
+    if [ ! -f "$USERS_FILE" ] || [ ! -s "$USERS_FILE" ]; then
+        return 0
+    fi
+
+    print_status "Migrating existing users for SSH tunnel support..."
+    groupadd -f "$SERVICE_GROUP"
+
+    while IFS= read -r user; do
+        local actual_shell
+        actual_shell=$(getent passwd "$user" 2>/dev/null | cut -d: -f7)
+        if [ -z "$actual_shell" ]; then
+            continue
+        fi
+
+        # Change shell from nologin to bash for SSH login
+        if [ "$actual_shell" = "/usr/sbin/nologin" ] || [ "$actual_shell" = "/bin/false" ]; then
+            usermod -s /bin/bash "$user"
+            print_status "Changed shell for '$user' to /bin/bash"
+        fi
+
+        # Add to noizdns group if not already a member
+        if ! id -nG "$user" 2>/dev/null | grep -qw "$SERVICE_GROUP"; then
+            usermod -aG "$SERVICE_GROUP" "$user"
+            print_status "Added '$user' to group '$SERVICE_GROUP'"
+        fi
+    done < "$USERS_FILE"
+}
+
 add_user() {
     if [ ! -f "$CONFIG_FILE" ]; then
         print_warning "No configuration found. Run install first."
@@ -735,7 +1078,7 @@ add_user() {
     echo -e "  ${BOLD}Add User${NC}"
     print_line
 
-    local shell="/usr/sbin/nologin"
+    local shell="/bin/bash"
     echo ""
 
     # Username
@@ -783,7 +1126,7 @@ add_user() {
     done
 
     # Create Linux user
-    useradd -m -s "$shell" "$username"
+    useradd -m -s "$shell" -G "$SERVICE_GROUP" "$username"
     echo "$username:$password" | chpasswd
 
     # Register in users file
@@ -793,6 +1136,45 @@ add_user() {
 
     # Enable Dante auth on first user
     enable_dante_auth
+
+    # Show config links for new user
+    if [ -f "$PUBLIC_KEY_FILE" ] && [ -f "$CONFIG_FILE" ]; then
+        load_existing_config
+        local pubkey
+        pubkey=$(cat "$PUBLIC_KEY_FILE" 2>/dev/null)
+        local default_resolver="8.8.8.8:53:0"
+        local short_name
+        short_name=$(echo "$NS_SUBDOMAIN" | awk -F. '{if(NF>=2) print $(NF-1); else print $1}')
+        local ssh_port="${SSH_PORT:-22}"
+        local ssh_domain
+        ssh_domain=$(derive_ssh_domain "$NS_SUBDOMAIN")
+
+        # SOCKS configs
+        local dnstt_data="16|dnstt|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${username}|${password}||||${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+        local noizdns_data="16|sayedns|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${username}|${password}||||${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+
+        # SSH configs
+        local dnstt_ssh_data="16|dnstt_ssh|${short_name} SSH|${ssh_domain}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|||1|${username}|${password}|${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+        local noizdns_ssh_data="16|sayedns_ssh|${short_name} SSH|${ssh_domain}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|||1|${username}|${password}|${ssh_port}|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+
+        echo ""
+        print_line
+        echo -e "  ${BOLD}Config links for ${username}${NC}"
+        print_line
+        echo ""
+        echo -e "  ${CYAN}DNSTT:${NC}"
+        echo -e "  ${WHITE}slipnet://$(echo -n "$dnstt_data" | base64 -w0)${NC}"
+        echo ""
+        echo -e "  ${CYAN}NoizDNS:${NC}"
+        echo -e "  ${WHITE}slipnet://$(echo -n "$noizdns_data" | base64 -w0)${NC}"
+        echo ""
+        echo -e "  ${CYAN}DNSTT + SSH:${NC}"
+        echo -e "  ${WHITE}slipnet://$(echo -n "$dnstt_ssh_data" | base64 -w0)${NC}"
+        echo ""
+        echo -e "  ${CYAN}NoizDNS + SSH:${NC}"
+        echo -e "  ${WHITE}slipnet://$(echo -n "$noizdns_ssh_data" | base64 -w0)${NC}"
+        print_line
+    fi
 }
 
 remove_user() {
@@ -866,7 +1248,7 @@ list_users() {
     fi
 
     echo ""
-    local shell_expected="/usr/sbin/nologin"
+    local shell_expected="/bin/bash"
 
     local warned=false
     while IFS= read -r user; do
@@ -1059,11 +1441,13 @@ uninstall() {
     print_warning "This will remove NoizDNS server and all its data."
     echo ""
     echo "  The following will be deleted:"
-    echo "    - Service:    ${SERVICE_NAME}"
+    echo "    - Services:   ${SERVICE_NAME}, ${SERVICE_NAME_SSH}, ${DNSDIST_SERVICE_NAME}"
     echo "    - Binary:     ${INSTALL_DIR}/dnstt-server"
     echo "    - Config:     ${CONFIG_DIR}/ (keys, settings)"
     echo "    - User:       ${SERVICE_USER}"
+    echo "    - Group:      ${SERVICE_GROUP}"
     echo "    - iptables:   port 53 -> ${DNSTT_PORT} redirect"
+    echo "    - SSH config: Match Group block removed"
     echo "    - Script:     ${SCRIPT_INSTALL_PATH}"
     if systemctl is-active --quiet danted 2>/dev/null; then
         echo "    - Dante:      SOCKS proxy will be stopped"
@@ -1084,11 +1468,25 @@ uninstall() {
 
     echo ""
 
-    # Stop and disable service
-    print_status "Stopping service..."
+    # Stop and disable all services
+    print_status "Stopping services..."
     systemctl stop "$SERVICE_NAME" 2>/dev/null || true
     systemctl disable "$SERVICE_NAME" 2>/dev/null || true
     rm -f "${SYSTEMD_DIR}/${SERVICE_NAME}.service"
+
+    systemctl stop "$SERVICE_NAME_SSH" 2>/dev/null || true
+    systemctl disable "$SERVICE_NAME_SSH" 2>/dev/null || true
+    rm -f "${SYSTEMD_DIR}/${SERVICE_NAME_SSH}.service"
+
+    systemctl stop "$DNSDIST_SERVICE_NAME" 2>/dev/null || true
+    systemctl disable "$DNSDIST_SERVICE_NAME" 2>/dev/null || true
+    rm -f "${SYSTEMD_DIR}/${DNSDIST_SERVICE_NAME}.service"
+
+    # Clean up old noizdns-mux service if present
+    systemctl stop "noizdns-mux" 2>/dev/null || true
+    systemctl disable "noizdns-mux" 2>/dev/null || true
+    rm -f "${SYSTEMD_DIR}/noizdns-mux.service"
+
     systemctl daemon-reload
 
     # Stop Dante if running
@@ -1096,6 +1494,14 @@ uninstall() {
         print_status "Stopping Dante SOCKS proxy..."
         systemctl stop danted 2>/dev/null || true
         systemctl disable danted 2>/dev/null || true
+    fi
+
+    # Remove SSH sshd_config Match Group block
+    local sshd_config="/etc/ssh/sshd_config"
+    if grep -q "# NoizDNS SSH tunneling" "$sshd_config" 2>/dev/null; then
+        print_status "Removing SSH tunnel configuration..."
+        sed -i '/# NoizDNS SSH tunneling/,/ForceCommand/d' "$sshd_config"
+        systemctl restart sshd 2>/dev/null || systemctl restart ssh 2>/dev/null || true
     fi
 
     # Remove iptables rules
@@ -1116,6 +1522,10 @@ uninstall() {
     # Remove user
     print_status "Removing service user..."
     userdel "$SERVICE_USER" 2>/dev/null || true
+
+    # Remove group
+    print_status "Removing service group..."
+    groupdel "$SERVICE_GROUP" 2>/dev/null || true
 
     # Remove this script
     print_status "Removing deploy script..."
@@ -1193,35 +1603,44 @@ handle_menu() {
                 show_configuration_info || true
                 ;;
             3)
-                if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-                    print_status "Service is running"
-                else
-                    print_warning "Service is not running"
-                fi
+                echo -e "  ${BOLD}SOCKS Service:${NC}"
                 systemctl status "$SERVICE_NAME" --no-pager -l 2>/dev/null || true
+                echo ""
+                echo -e "  ${BOLD}SSH Service:${NC}"
+                systemctl status "$SERVICE_NAME_SSH" --no-pager -l 2>/dev/null || true
+                echo ""
+                echo -e "  ${BOLD}DNS Router:${NC}"
+                systemctl status "$DNSDIST_SERVICE_NAME" --no-pager -l 2>/dev/null || true
                 ;;
             4)
                 print_status "Showing logs (Ctrl+C to exit)..."
-                journalctl -u "$SERVICE_NAME" -f || true
+                journalctl -u "$SERVICE_NAME" -u "$SERVICE_NAME_SSH" -u "$DNSDIST_SERVICE_NAME" -f || true
                 ;;
             5)
                 user_management_menu || true
                 ;;
             6)
-                systemctl restart "$SERVICE_NAME" 2>/dev/null && print_status "Service restarted" || print_error "Failed to restart"
+                systemctl restart "$DNSDIST_SERVICE_NAME" 2>/dev/null || true
+                systemctl restart "$SERVICE_NAME" 2>/dev/null && print_status "SOCKS service restarted" || print_error "Failed to restart SOCKS service"
+                systemctl restart "$SERVICE_NAME_SSH" 2>/dev/null && print_status "SSH service restarted" || print_error "Failed to restart SSH service"
                 ;;
             7)
-                systemctl stop "$SERVICE_NAME" 2>/dev/null && print_status "Service stopped" || print_error "Failed to stop"
+                systemctl stop "$SERVICE_NAME" 2>/dev/null && print_status "SOCKS service stopped" || print_error "Failed to stop SOCKS service"
+                systemctl stop "$SERVICE_NAME_SSH" 2>/dev/null && print_status "SSH service stopped" || print_error "Failed to stop SSH service"
+                systemctl stop "$DNSDIST_SERVICE_NAME" 2>/dev/null || true
                 ;;
             8)
-                systemctl start "$SERVICE_NAME" 2>/dev/null && print_status "Service started" || print_error "Failed to start"
+                systemctl start "$DNSDIST_SERVICE_NAME" 2>/dev/null || true
+                systemctl start "$SERVICE_NAME" 2>/dev/null && print_status "SOCKS service started" || print_error "Failed to start SOCKS service"
+                systemctl start "$SERVICE_NAME_SSH" 2>/dev/null && print_status "SSH service started" || print_error "Failed to start SSH service"
                 ;;
             9)
                 detect_os
                 detect_arch
                 download_binary
-                print_status "Binary updated. Restarting service..."
-                systemctl restart "$SERVICE_NAME" 2>/dev/null && print_status "Service restarted" || print_warning "Service not running"
+                print_status "Binary updated. Restarting services..."
+                systemctl restart "$SERVICE_NAME" 2>/dev/null && print_status "SOCKS service restarted" || print_warning "SOCKS service not running"
+                systemctl restart "$SERVICE_NAME_SSH" 2>/dev/null && print_status "SSH service restarted" || print_warning "SSH service not running"
                 ;;
             10)
                 update_script || true
@@ -1280,36 +1699,40 @@ install_script() {
 # ─── Main Install Flow ───────────────────────────────────────────────────────
 
 do_install() {
-    # Detect environment
+    # Check if this is a fresh install
+    local fresh_install=true
+    if [ -f "$CONFIG_FILE" ]; then
+        fresh_install=false
+    fi
+
     detect_os
     detect_arch
-
-    # Install deps
+    detect_ssh_port
     install_dependencies
-
-    # Get configuration
     get_user_input
-
-    # Download binary
     download_binary
-
-    # Create service user
     create_service_user
-
-    # Generate keys
     generate_keys
-
-    # Save config
     save_config
-
-    # Firewall
     configure_firewall
-
-    # Setup Dante SOCKS proxy
     setup_dante
 
-    # Systemd service
+    # Fresh install: create initial user
+    if [ "$fresh_install" = true ]; then
+        create_initial_user
+    else
+        migrate_existing_users
+    fi
+
+    # SSH tunneling
+    setup_ssh_tunneling
+
+    # Systemd services
     create_systemd_service
+    create_dnstt_ssh_service
+
+    # DNS router
+    setup_dnsdist
 
     # Start
     start_services
