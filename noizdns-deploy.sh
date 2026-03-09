@@ -784,8 +784,8 @@ setLocal("127.0.0.1:${DNSTT_PORT}")
 newServer({address="127.0.0.1:${DNSTT_SOCKS_PORT}", name="dnstt-socks", pool="dnstt-socks"})
 newServer({address="127.0.0.1:${DNSTT_SSH_PORT}", name="dnstt-ssh", pool="dnstt-ssh"})
 
-addAction(SuffixMatchNodeRule({"${NS_SUBDOMAIN}."}), PoolAction("dnstt-socks"))
-addAction(SuffixMatchNodeRule({"${dnstt_ssh_domain}."}), PoolAction("dnstt-ssh"))
+addAction(SuffixMatchNodeRule("${NS_SUBDOMAIN}."), PoolAction("dnstt-socks"))
+addAction(SuffixMatchNodeRule("${dnstt_ssh_domain}."), PoolAction("dnstt-ssh"))
 
 addAction(AllRule(), DropAction())
 EOF
