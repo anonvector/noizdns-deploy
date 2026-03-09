@@ -5,7 +5,7 @@ One-click DNS tunnel server deployment for Linux. Deploys a dnstt server that **
 ## Quick Install
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/noizdns-deploy.sh)
+bash <(curl -Ls https://gitlab.com/anonvector/noizdns-deploy/-/raw/main/noizdns-deploy.sh)
 ```
 
 After installation, run `noizdns` anytime for the management menu.
@@ -16,7 +16,7 @@ NoizDNS is a DPI-evasion layer on top of [dnstt](https://www.bamsoftware.com/sof
 
 ## Client
 
-[**SlipNet**](https://github.com/anonvector/SlipNet) — Android VPN client with built-in DNSTT and NoizDNS support, DNS scanner, and SSH tunneling.
+[**SlipNet**](https://gitlab.com/anonvector/slipnet) — Android VPN client with built-in DNSTT and NoizDNS support, DNS scanner, and SSH tunneling.
 
 ## Prerequisites
 
@@ -33,7 +33,7 @@ Replace `example.com` with your domain. The `t` subdomain is the tunnel endpoint
 ## Features
 
 - **Multi-distro**: Fedora, Rocky Linux, CentOS, Debian, Ubuntu
-- **Auto-download**: Pre-built server binary downloaded from GitHub releases
+- **Auto-download**: Pre-built server binary downloaded from GitLab
 - **Non-interactive mode**: CLI flags for fully automated deployments
 - **SOCKS5 proxy**: Dante-based SOCKS proxy with optional user authentication
 - **Systemd integration**: Auto-start, restart on failure, security hardening
@@ -47,7 +47,7 @@ Replace `example.com` with your domain. The `t` subdomain is the tunnel endpoint
 ### Interactive Install
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/noizdns-deploy.sh)
+bash <(curl -Ls https://gitlab.com/anonvector/noizdns-deploy/-/raw/main/noizdns-deploy.sh)
 ```
 
 The script will prompt for:
@@ -71,7 +71,7 @@ noizdns --domain t.example.com \
   --pubkey-file /path/to/server.pub
 
 # One-liner via curl
-bash <(curl -Ls https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/noizdns-deploy.sh) \
+bash <(curl -Ls https://gitlab.com/anonvector/noizdns-deploy/-/raw/main/noizdns-deploy.sh) \
   --domain t.example.com
 ```
 
