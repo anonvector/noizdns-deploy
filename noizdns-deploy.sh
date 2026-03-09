@@ -2,7 +2,7 @@
 
 # NoizDNS Server Deploy Script
 # One-click dnstt + NoizDNS server deployment for Linux
-# https://github.com/anonvector/noizdns-deploy
+# https://gitlab.com/anonvector/noizdns-deploy
 #
 # Supports: Fedora, Rocky, CentOS, Debian, Ubuntu
 # The server auto-detects both dnstt and NoizDNS clients — same binary.
@@ -10,7 +10,7 @@
 set -e
 
 SCRIPT_VERSION="1.4.0"
-SCRIPT_URL="https://raw.githubusercontent.com/anonvector/noizdns-deploy/dev/noizdns-deploy.sh"
+SCRIPT_URL="https://gitlab.com/anonvector/noizdns-deploy/-/raw/dev/noizdns-deploy.sh"
 
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
@@ -44,7 +44,7 @@ DNSDIST_SERVICE_NAME="noizdns-dns"
 DNSTT_SOCKS_PORT="5301"
 DNSTT_SSH_PORT="5302"
 USERS_FILE="${CONFIG_DIR}/users.txt"
-RELEASE_URL="https://github.com/anonvector/noizdns-deploy/releases/latest/download"
+RELEASE_URL="https://gitlab.com/anonvector/noizdns-deploy/-/raw/dev/bin"
 
 # CLI argument variables (for non-interactive mode)
 CLI_DOMAIN=""
