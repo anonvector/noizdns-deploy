@@ -368,16 +368,14 @@ generate_slipnet_configs() {
                 local noizdns_data="16|sayedns|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}||||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
                 echo -e "  ${CYAN}DNSTT:${NC}   ${WHITE}slipnet://$(echo -n "$dnstt_data" | base64 -w0)${NC}"
                 echo -e "  ${CYAN}NoizDNS:${NC} ${WHITE}slipnet://$(echo -n "$noizdns_data" | base64 -w0)${NC}"
-                if [ -n "${SSH_SUBDOMAIN:-}" ]; then
-                    local dnstt_ssh_data="16|dnstt_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}||${socks_user}||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
-                    local noizdns_ssh_data="16|sayedns_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}||${socks_user}||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
-                    echo -e "  ${CYAN}DNSTT+SSH:${NC}   ${WHITE}slipnet://$(echo -n "$dnstt_ssh_data" | base64 -w0)${NC}"
-                    echo -e "  ${CYAN}NoizDNS+SSH:${NC} ${WHITE}slipnet://$(echo -n "$noizdns_ssh_data" | base64 -w0)${NC}"
-                fi
             done < "$USERS_FILE"
 
             echo ""
             echo -e "  ${YELLOW}Note:${NC} Set the password in the app after importing."
+            if [ -n "${SSH_SUBDOMAIN:-}" ]; then
+                echo -e "  ${YELLOW}Note:${NC} SSH profiles require a password and can only be generated"
+                echo -e "        when adding a new user (User Management -> Add User)."
+            fi
             print_line
             return
         fi
