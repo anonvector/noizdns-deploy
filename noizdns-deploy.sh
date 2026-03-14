@@ -327,57 +327,6 @@ generate_keys() {
     echo ""
 }
 
-# ─── SSH Key Generation ──────────────────────────────────────────────────────
-
-generate_ssh_keys() {
-    if [ -z "$SSH_SUBDOMAIN" ]; then
-        return 0
-    fi
-
-    local key_prefix
-    key_prefix=$(echo "$SSH_SUBDOMAIN" | sed 's/\./_/g')
-    SSH_PRIVATE_KEY_FILE="${CONFIG_DIR}/${key_prefix}_server.key"
-    SSH_PUBLIC_KEY_FILE="${CONFIG_DIR}/${key_prefix}_server.pub"
-
-    if [ "$AUTO_MODE" = true ] && [[ -n "$CLI_PRIVKEY_FILE" && -n "$CLI_PUBKEY_FILE" ]]; then
-        # Auto mode with provided keys: skip SSH key generation (use auto-gen)
-        :
-    fi
-
-    if [[ -f "$SSH_PRIVATE_KEY_FILE" && -f "$SSH_PUBLIC_KEY_FILE" ]]; then
-        print_status "Existing SSH keys found for $SSH_SUBDOMAIN"
-        chown "$SERVICE_USER":"$SERVICE_USER" "$SSH_PRIVATE_KEY_FILE" "$SSH_PUBLIC_KEY_FILE"
-        chmod 600 "$SSH_PRIVATE_KEY_FILE"
-        chmod 644 "$SSH_PUBLIC_KEY_FILE"
-        echo ""
-        echo -e "  ${CYAN}SSH Public Key:${NC}"
-        echo -e "  ${YELLOW}$(cat "$SSH_PUBLIC_KEY_FILE")${NC}"
-        echo ""
-
-        if [ "$AUTO_MODE" = true ]; then
-            return 0
-        fi
-
-        print_question "Regenerate SSH keys? [y/N]: "
-        read -r regen
-        if [[ ! "$regen" =~ ^[Yy]$ ]]; then
-            return 0
-        fi
-    fi
-
-    print_status "Generating SSH tunnel keypair..."
-    dnstt-server -gen-key -privkey-file "$SSH_PRIVATE_KEY_FILE" -pubkey-file "$SSH_PUBLIC_KEY_FILE"
-
-    chown "$SERVICE_USER":"$SERVICE_USER" "$SSH_PRIVATE_KEY_FILE" "$SSH_PUBLIC_KEY_FILE"
-    chmod 600 "$SSH_PRIVATE_KEY_FILE"
-    chmod 644 "$SSH_PUBLIC_KEY_FILE"
-
-    echo ""
-    echo -e "  ${CYAN}SSH Public Key:${NC}"
-    echo -e "  ${YELLOW}$(cat "$SSH_PUBLIC_KEY_FILE")${NC}"
-    echo ""
-}
-
 # ─── SlipNet Config Generation ───────────────────────────────────────────────
 
 generate_slipnet_configs() {
@@ -390,11 +339,6 @@ generate_slipnet_configs() {
     pubkey=$(cat "$PUBLIC_KEY_FILE" 2>/dev/null)
     if [ -z "$pubkey" ]; then
         return
-    fi
-
-    local ssh_pubkey=""
-    if [ -n "$SSH_SUBDOMAIN" ] && [ -f "$SSH_PUBLIC_KEY_FILE" ]; then
-        ssh_pubkey=$(cat "$SSH_PUBLIC_KEY_FILE" 2>/dev/null)
     fi
 
     local default_resolver="8.8.8.8:53:0"
@@ -424,9 +368,9 @@ generate_slipnet_configs() {
                 local noizdns_data="16|sayedns|${short_name}|${NS_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}||||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
                 echo -e "  ${CYAN}DNSTT:${NC}   ${WHITE}slipnet://$(echo -n "$dnstt_data" | base64 -w0)${NC}"
                 echo -e "  ${CYAN}NoizDNS:${NC} ${WHITE}slipnet://$(echo -n "$noizdns_data" | base64 -w0)${NC}"
-                if [ -n "$ssh_pubkey" ]; then
-                    local dnstt_ssh_data="16|dnstt_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${ssh_pubkey}|${socks_user}||||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
-                    local noizdns_ssh_data="16|sayedns_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${ssh_pubkey}|${socks_user}||||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+                if [ -n "${SSH_SUBDOMAIN:-}" ]; then
+                    local dnstt_ssh_data="16|dnstt_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}||||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+                    local noizdns_ssh_data="16|sayedns_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}||||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
                     echo -e "  ${CYAN}DNSTT+SSH:${NC}   ${WHITE}slipnet://$(echo -n "$dnstt_ssh_data" | base64 -w0)${NC}"
                     echo -e "  ${CYAN}NoizDNS+SSH:${NC} ${WHITE}slipnet://$(echo -n "$noizdns_ssh_data" | base64 -w0)${NC}"
                 fi
@@ -453,9 +397,9 @@ generate_slipnet_configs() {
     echo -e "  ${CYAN}NoizDNS:${NC}"
     echo -e "  ${WHITE}slipnet://$(echo -n "$noizdns_data" | base64 -w0)${NC}"
 
-    if [ -n "$ssh_pubkey" ]; then
-        local dnstt_ssh_data="16|dnstt_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${ssh_pubkey}|${socks_user}|${socks_pass}|||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
-        local noizdns_ssh_data="16|sayedns_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${ssh_pubkey}|${socks_user}|${socks_pass}|||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+    if [ -n "${SSH_SUBDOMAIN:-}" ]; then
+        local dnstt_ssh_data="16|dnstt_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}|${socks_pass}|||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+        local noizdns_ssh_data="16|sayedns_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}|${socks_pass}|||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
         echo ""
         echo -e "  ${CYAN}DNSTT+SSH:${NC}"
         echo -e "  ${WHITE}slipnet://$(echo -n "$dnstt_ssh_data" | base64 -w0)${NC}"
@@ -491,8 +435,6 @@ TUNNEL_MODE="socks"
 PRIVATE_KEY_FILE="$PRIVATE_KEY_FILE"
 PUBLIC_KEY_FILE="$PUBLIC_KEY_FILE"
 SSH_SUBDOMAIN="${SSH_SUBDOMAIN:-}"
-SSH_PRIVATE_KEY_FILE="${SSH_PRIVATE_KEY_FILE:-}"
-SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-}"
 EOF
     chmod 640 "$CONFIG_FILE"
     chown root:"$SERVICE_USER" "$CONFIG_FILE"
@@ -829,7 +771,7 @@ Environment=TOR_PT_MANAGED_TRANSPORT_VER=1
 Environment=TOR_PT_SERVER_TRANSPORTS=dnstt
 Environment=TOR_PT_SERVER_BINDADDR=dnstt-0.0.0.0:${DNSTT_SSH_PORT}
 Environment=TOR_PT_ORPORT=127.0.0.1:22
-ExecStart=${INSTALL_DIR}/dnstt-server -privkey-file ${SSH_PRIVATE_KEY_FILE} -mtu ${MTU_VALUE} ${SSH_SUBDOMAIN}
+ExecStart=${INSTALL_DIR}/dnstt-server -privkey-file ${PRIVATE_KEY_FILE} -mtu ${MTU_VALUE} ${SSH_SUBDOMAIN}
 Restart=always
 RestartSec=5
 KillMode=mixed
@@ -976,10 +918,10 @@ show_configuration_info() {
         fi
         echo -e "  ${CYAN}SSH:${NC}   ${SSH_SUBDOMAIN} -> SSH:22  ($ssh_status_text)"
 
-        if [ -n "${SSH_PUBLIC_KEY_FILE:-}" ] && [ -f "$SSH_PUBLIC_KEY_FILE" ]; then
+        if [ -n "${PUBLIC_KEY_FILE:-}" ] && [ -f "$PUBLIC_KEY_FILE" ]; then
             echo ""
-            echo -e "  ${CYAN}SSH Public Key:${NC}"
-            echo -e "  ${YELLOW}$(cat "$SSH_PUBLIC_KEY_FILE")${NC}"
+            echo -e "  ${CYAN}Public Key (shared):${NC}"
+            echo -e "  ${YELLOW}$(cat "$PUBLIC_KEY_FILE")${NC}"
         fi
     fi
 
@@ -1238,13 +1180,11 @@ add_user() {
         echo -e "  ${CYAN}NoizDNS:${NC}"
         echo -e "  ${WHITE}slipnet://$(echo -n "$noizdns_data" | base64 -w0)${NC}"
 
-        if [ -n "${SSH_SUBDOMAIN:-}" ] && [ -n "${SSH_PUBLIC_KEY_FILE:-}" ] && [ -f "$SSH_PUBLIC_KEY_FILE" ]; then
-            local ssh_pubkey
-            ssh_pubkey=$(cat "$SSH_PUBLIC_KEY_FILE" 2>/dev/null)
+        if [ -n "${SSH_SUBDOMAIN:-}" ] && [ -n "${PUBLIC_KEY_FILE:-}" ] && [ -f "$PUBLIC_KEY_FILE" ]; then
             local ssh_short_name
             ssh_short_name=$(echo "$SSH_SUBDOMAIN" | awk -F. '{if(NF>=2) print $(NF-1); else print $1}')
-            local dnstt_ssh_data="16|dnstt_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${ssh_pubkey}|${username}|${password}|||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
-            local noizdns_ssh_data="16|sayedns_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${ssh_pubkey}|${username}|${password}|||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+            local dnstt_ssh_data="16|dnstt_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${username}|${password}|||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
+            local noizdns_ssh_data="16|sayedns_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${username}|${password}|||||0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
             echo ""
             echo -e "  ${CYAN}DNSTT+SSH:${NC}"
             echo -e "  ${WHITE}slipnet://$(echo -n "$dnstt_ssh_data" | base64 -w0)${NC}"
@@ -1820,7 +1760,6 @@ do_install() {
     download_binary
     create_service_user
     generate_keys
-    generate_ssh_keys
     save_config
     configure_firewall
     setup_dante
