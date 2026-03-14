@@ -537,12 +537,18 @@ configure_firewall() {
     if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld; then
         firewall-cmd --permanent --add-port="${DNSTT_PORT}"/udp
         firewall-cmd --permanent --add-port=53/udp
+        if [ -n "${SSH_SUBDOMAIN:-}" ]; then
+            firewall-cmd --permanent --add-port="${DNSTT_SSH_PORT}"/udp
+        fi
         firewall-cmd --reload
         print_status "firewalld rules added"
     # UFW
     elif command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
         ufw allow "${DNSTT_PORT}"/udp
         ufw allow 53/udp
+        if [ -n "${SSH_SUBDOMAIN:-}" ]; then
+            ufw allow "${DNSTT_SSH_PORT}"/udp
+        fi
         print_status "ufw rules added"
     fi
 
@@ -558,8 +564,14 @@ configure_firewall() {
     iptables  -D INPUT -p udp --dport "$DNSTT_SSH_PORT" -j ACCEPT 2>/dev/null || true
     iptables  -t nat -D PREROUTING -i "$iface" -p udp --dport 53 -j REDIRECT --to-ports "$DNSTT_PORT" 2>/dev/null || true
 
-    # Remove old SSH domain-match rules (may exist from previous config)
-    while iptables -t nat -D PREROUTING -i "$iface" -p udp --dport 53 -m string --algo bm -j REDIRECT --to-ports "$DNSTT_SSH_PORT" 2>/dev/null; do :; done
+    # Remove old SSH domain-match rules (may exist from previous config).
+    # Must match by rule number since -D requires exact spec including --hex-string.
+    while true; do
+        local rulenum
+        rulenum=$(iptables -t nat -L PREROUTING --line-numbers -n 2>/dev/null | grep "redir ports $DNSTT_SSH_PORT" | head -1 | awk '{print $1}')
+        [ -z "$rulenum" ] && break
+        iptables -t nat -D PREROUTING "$rulenum" 2>/dev/null || break
+    done
 
     # SSH domain routing: match DNS wire-format of SSH subdomain → SSH port
     if [ -n "${SSH_SUBDOMAIN:-}" ]; then
@@ -582,7 +594,12 @@ configure_firewall() {
         ip6tables -D INPUT -p udp --dport "$DNSTT_PORT" -j ACCEPT 2>/dev/null || true
         ip6tables -D INPUT -p udp --dport "$DNSTT_SSH_PORT" -j ACCEPT 2>/dev/null || true
         ip6tables -t nat -D PREROUTING -i "$iface" -p udp --dport 53 -j REDIRECT --to-ports "$DNSTT_PORT" 2>/dev/null || true
-        while ip6tables -t nat -D PREROUTING -i "$iface" -p udp --dport 53 -m string --algo bm -j REDIRECT --to-ports "$DNSTT_SSH_PORT" 2>/dev/null; do :; done
+        while true; do
+            local rulenum6
+            rulenum6=$(ip6tables -t nat -L PREROUTING --line-numbers -n 2>/dev/null | grep "redir ports $DNSTT_SSH_PORT" | head -1 | awk '{print $1}')
+            [ -z "$rulenum6" ] && break
+            ip6tables -t nat -D PREROUTING "$rulenum6" 2>/dev/null || break
+        done
 
         if [ -n "${SSH_SUBDOMAIN:-}" ]; then
             local ssh_hex6
@@ -628,13 +645,23 @@ remove_iptables_rules() {
     iptables  -D INPUT -p udp --dport "$DNSTT_PORT" -j ACCEPT 2>/dev/null || true
     iptables  -D INPUT -p udp --dport "$DNSTT_SSH_PORT" -j ACCEPT 2>/dev/null || true
     iptables  -t nat -D PREROUTING -i "$iface" -p udp --dport 53 -j REDIRECT --to-ports "$DNSTT_PORT" 2>/dev/null || true
-    while iptables -t nat -D PREROUTING -i "$iface" -p udp --dport 53 -m string --algo bm -j REDIRECT --to-ports "$DNSTT_SSH_PORT" 2>/dev/null; do :; done
+    while true; do
+        local rulenum
+        rulenum=$(iptables -t nat -L PREROUTING --line-numbers -n 2>/dev/null | grep "redir ports $DNSTT_SSH_PORT" | head -1 | awk '{print $1}')
+        [ -z "$rulenum" ] && break
+        iptables -t nat -D PREROUTING "$rulenum" 2>/dev/null || break
+    done
 
     if command -v ip6tables &>/dev/null; then
         ip6tables -D INPUT -p udp --dport "$DNSTT_PORT" -j ACCEPT 2>/dev/null || true
         ip6tables -D INPUT -p udp --dport "$DNSTT_SSH_PORT" -j ACCEPT 2>/dev/null || true
         ip6tables -t nat -D PREROUTING -i "$iface" -p udp --dport 53 -j REDIRECT --to-ports "$DNSTT_PORT" 2>/dev/null || true
-        while ip6tables -t nat -D PREROUTING -i "$iface" -p udp --dport 53 -m string --algo bm -j REDIRECT --to-ports "$DNSTT_SSH_PORT" 2>/dev/null; do :; done
+        while true; do
+            local rulenum6
+            rulenum6=$(ip6tables -t nat -L PREROUTING --line-numbers -n 2>/dev/null | grep "redir ports $DNSTT_SSH_PORT" | head -1 | awk '{print $1}')
+            [ -z "$rulenum6" ] && break
+            ip6tables -t nat -D PREROUTING "$rulenum6" 2>/dev/null || break
+        done
     fi
 
     save_iptables_rules
