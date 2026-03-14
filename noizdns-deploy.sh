@@ -395,7 +395,7 @@ generate_slipnet_configs() {
     echo -e "  ${CYAN}NoizDNS:${NC}"
     echo -e "  ${WHITE}slipnet://$(echo -n "$noizdns_data" | base64 -w0)${NC}"
 
-    if [ -n "${SSH_SUBDOMAIN:-}" ]; then
+    if [ -n "${SSH_SUBDOMAIN:-}" ] && [ -n "$socks_user" ] && [ -n "$socks_pass" ]; then
         local dnstt_ssh_data="16|dnstt_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}|${socks_pass}|1|${socks_user}|${socks_pass}|22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
         local noizdns_ssh_data="16|sayedns_ssh|${ssh_short_name}-ssh|${SSH_SUBDOMAIN}|${default_resolver}|0|5000|bbr|1080|127.0.0.1|0|${pubkey}|${socks_user}|${socks_pass}|1|${socks_user}|${socks_pass}|22|0|127.0.0.1|0||udp|password|||0|443||||0||0|0|"
         echo ""
@@ -404,6 +404,9 @@ generate_slipnet_configs() {
         echo ""
         echo -e "  ${CYAN}NoizDNS+SSH:${NC}"
         echo -e "  ${WHITE}slipnet://$(echo -n "$noizdns_ssh_data" | base64 -w0)${NC}"
+    elif [ -n "${SSH_SUBDOMAIN:-}" ]; then
+        echo ""
+        echo -e "  ${YELLOW}Note:${NC} SSH profiles require credentials. Add a user via User Management."
     fi
 
     echo ""
