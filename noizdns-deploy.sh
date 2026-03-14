@@ -186,7 +186,7 @@ install_dependencies() {
     case $PKG_MANAGER in
         dnf|yum)
             $PKG_MANAGER install -y epel-release 2>/dev/null || true
-            $PKG_MANAGER install -y curl iptables iptables-services 2>/dev/null || true
+            $PKG_MANAGER install --skip-broken -y curl iptables iptables-services 2>/dev/null || true
             ;;
         apt)
             apt update -qq
