@@ -1,22 +1,18 @@
 # NoizDNS Deploy
 
-One-click DNS tunnel server deployment for Linux. Deploys a dnstt server that **auto-detects** both standard **dnstt** and **NoizDNS** (DPI-evasion) clients — same binary, no extra configuration.
+One-click server deployment for Linux. Deploys a NoizDNS server — same binary, no extra configuration.
 
 ## Quick Install
 
 ```bash
-bash <(curl -Ls https://gitlab.com/anonvector/noizdns-deploy/-/raw/main/noizdns-deploy.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/noizdns-deploy.sh)
 ```
 
 After installation, run `noizdns` anytime for the management menu.
 
-## What is NoizDNS?
-
-NoizDNS is a DPI-evasion layer on top of [dnstt](https://www.bamsoftware.com/software/dnstt/). The server auto-detects which protocol a client uses per-query, so both standard dnstt and NoizDNS clients work simultaneously through the same server.
-
 ## Client
 
-[**SlipNet**](https://gitlab.com/anonvector/slipnet) — Android VPN client with built-in DNSTT and NoizDNS support, DNS scanner, and SSH tunneling.
+[**SlipNet**](https://github.com/anonvector/SlipNet) — Android VPN client with built-in NoizDNS support.
 
 ## Prerequisites
 
@@ -33,7 +29,7 @@ Replace `example.com` with your domain. The `t` subdomain is the tunnel endpoint
 ## Features
 
 - **Multi-distro**: Fedora, Rocky Linux, CentOS, Debian, Ubuntu
-- **Auto-download**: Pre-built server binary downloaded from GitLab
+- **Auto-download**: Pre-built server binary
 - **Non-interactive mode**: CLI flags for fully automated deployments
 - **SOCKS5 proxy**: Dante-based SOCKS proxy with optional user authentication
 - **Systemd integration**: Auto-start, restart on failure, security hardening
@@ -47,7 +43,7 @@ Replace `example.com` with your domain. The `t` subdomain is the tunnel endpoint
 ### Interactive Install
 
 ```bash
-bash <(curl -Ls https://gitlab.com/anonvector/noizdns-deploy/-/raw/main/noizdns-deploy.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/noizdns-deploy.sh)
 ```
 
 The script will prompt for:
@@ -71,7 +67,7 @@ noizdns --domain t.example.com \
   --pubkey-file /path/to/server.pub
 
 # One-liner via curl
-bash <(curl -Ls https://gitlab.com/anonvector/noizdns-deploy/-/raw/main/noizdns-deploy.sh) \
+bash <(curl -Ls https://raw.githubusercontent.com/anonvector/noizdns-deploy/main/noizdns-deploy.sh) \
   --domain t.example.com
 ```
 
@@ -132,23 +128,6 @@ From the menu, select option **11**. This removes:
 - Service user
 - iptables rules
 - The deploy script itself
-
-## How It Works
-
-```
-┌─────────────┐     DNS queries      ┌──────────────┐     ┌────────────┐
-│  SlipNet     │ ──────────────────── │  DNS Resolver │ ──→ │  dnstt     │
-│  (Android)   │  (hex or base32     │  (public)     │     │  server    │
-│              │   in subdomains)     └──────────────┘     │            │
-│  dnstt or    │                                           │ auto-detect│
-│  NoizDNS     │ ←──────────────────────────────────────── │ encoding   │
-└─────────────┘   TXT responses (downstream data)         └─────┬──────┘
-                                                                 │
-                                                           ┌─────▼──────┐
-                                                           │  SSH or    │
-                                                           │  SOCKS5    │
-                                                           └────────────┘
-```
 
 ## File Locations
 
