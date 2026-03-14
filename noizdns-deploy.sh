@@ -481,7 +481,34 @@ get_user_input() {
         print_error "Domain is required"
     done
 
-    # MTU
+    # Tunnel mode — SOCKS only
+    TUNNEL_MODE="socks"
+
+    # SSH tunnel subdomain (optional)
+    local existing_ssh=""
+    if [ -n "${SSH_SUBDOMAIN:-}" ]; then
+        existing_ssh="$SSH_SUBDOMAIN"
+    fi
+
+    echo ""
+    if [ -n "$existing_ssh" ]; then
+        print_question "SSH tunnel subdomain [${existing_ssh}] (blank = keep, 'none' = disable): "
+    else
+        print_question "SSH tunnel subdomain (blank = skip, e.g. s.example.com): "
+    fi
+    read -r ssh_input
+    ssh_input=$(sanitize_domain "$ssh_input")
+
+    if [ "$ssh_input" = "none" ]; then
+        SSH_SUBDOMAIN=""
+    elif [ -n "$ssh_input" ]; then
+        SSH_SUBDOMAIN="$ssh_input"
+    elif [ -z "$ssh_input" ] && [ -n "$existing_ssh" ]; then
+        SSH_SUBDOMAIN="$existing_ssh"
+    fi
+
+    # MTU (applies to both SOCKS and SSH tunnels)
+    echo ""
     if [[ -n "$existing_mtu" ]]; then
         print_question "MTU [${existing_mtu}]: "
     else
@@ -489,36 +516,6 @@ get_user_input() {
     fi
     read -r MTU_VALUE
     MTU_VALUE=${MTU_VALUE:-${existing_mtu:-1232}}
-
-    # Tunnel mode — SOCKS only
-    TUNNEL_MODE="socks"
-
-    # SSH tunnel subdomain (optional)
-    if [ "$AUTO_MODE" = true ]; then
-        SSH_SUBDOMAIN=$(sanitize_domain "${CLI_SSH_DOMAIN:-}")
-    else
-        local existing_ssh=""
-        if [ -n "${SSH_SUBDOMAIN:-}" ]; then
-            existing_ssh="$SSH_SUBDOMAIN"
-        fi
-
-        echo ""
-        if [ -n "$existing_ssh" ]; then
-            print_question "SSH tunnel subdomain [${existing_ssh}] (blank = keep, 'none' = disable): "
-        else
-            print_question "SSH tunnel subdomain (blank = skip, e.g. s.example.com): "
-        fi
-        read -r ssh_input
-        ssh_input=$(sanitize_domain "$ssh_input")
-
-        if [ "$ssh_input" = "none" ]; then
-            SSH_SUBDOMAIN=""
-        elif [ -n "$ssh_input" ]; then
-            SSH_SUBDOMAIN="$ssh_input"
-        elif [ -z "$ssh_input" ] && [ -n "$existing_ssh" ]; then
-            SSH_SUBDOMAIN="$existing_ssh"
-        fi
-    fi
 
     echo ""
     print_line
