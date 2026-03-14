@@ -83,7 +83,7 @@ usage() {
     echo "Usage: noizdns [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  -d, --domain <domain>       Tunnel domain (e.g. t.example.com)"
+    echo "  -d, --domain <domain>       SOCKS tunnel domain (e.g. t.example.com)"
     echo "  -s, --ssh-domain <domain>   SSH tunnel domain (e.g. s.example.com)"
     echo "  -m, --mtu <value>           MTU value (default: 1232)"
     echo "      --pubkey-file <path>    Path to existing public key file"
@@ -475,7 +475,7 @@ get_user_input() {
         if [[ -n "$existing_domain" ]]; then
             print_question "Tunnel domain [${existing_domain}]: "
         else
-            print_question "Tunnel domain (e.g. t.example.com): "
+            print_question "SOCKS tunnel domain (e.g. t.example.com): "
         fi
         read -r NS_SUBDOMAIN
         NS_SUBDOMAIN=$(sanitize_domain "${NS_SUBDOMAIN:-$existing_domain}")
